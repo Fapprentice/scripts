@@ -5,8 +5,8 @@ let usableApps = [];
 let activePage = 'dashboard';
 let sessionToken = null;
 let sessionClaimPromise = null;
+let heatmapMonthOffset = 0;
 let _lastFilePickTs = 0;  // guard against render() destroying the file input while picker is open
-const frontendId = String(Date.now())+Math.random().toString(16).slice(2);
 const $ = (s, ctx) => (ctx||document).querySelector(s);
 const $$ = (s, ctx) => [...(ctx||document).querySelectorAll(s)];
 const pageTitles = {
@@ -16,18 +16,7 @@ const pageTitles = {
   settings:['设置','目标、生成参数、休息与退出。']
 };
 const runNames = {generate:'生成任务', evaluate:'AI 验收'};
-function claimFrontend(){
-  const now = Date.now();
-  const old = JSON.parse(localStorage.getItem('taskVergeFrontend') || 'null');
-  if(old && old.id !== frontendId && now - old.ts < 5000) return false;
-  localStorage.setItem('taskVergeFrontend', JSON.stringify({id:frontendId, ts:now}));
-  setInterval(()=>localStorage.setItem('taskVergeFrontend', JSON.stringify({id:frontendId, ts:Date.now()})), 2000);
-  addEventListener('beforeunload',()=>{
-    const cur = JSON.parse(localStorage.getItem('taskVergeFrontend') || 'null');
-    if(cur && cur.id === frontendId) localStorage.removeItem('taskVergeFrontend');
-  });
-  return true;
-}
+function setModalOpen(modal, open){ modal.hidden=!open; document.body.classList.toggle('modal-open', open); }
 async function api(path, body){
   if(!sessionToken && !await ensureSession()) throw new Error('无法建立本地会话');
   const opt = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
@@ -133,14 +122,17 @@ function showModal(title, msg, kind='error'){
   $('.modal-msg', m).textContent = msg;
   m.style.display = 'flex';
 }
-const pageScroll = {};
 function setPage(page){
-  pageScroll[activePage] = document.scrollingElement.scrollTop;
   const t = pageTitles[page] || [page, ''];
-  $('#title').textContent = t[0];
-  $('#subtitle').textContent = t[1] || '';
+  if($('#title')) $('#title').textContent = t[0];
+  if($('#subtitle')) $('#subtitle').textContent = t[1] || '';
   $('.actions')?.classList.toggle('page-actions-hidden', page !== 'dashboard');
-  requestAnimationFrame(() => document.scrollingElement.scrollTop = pageScroll[page] || 0);
+  requestAnimationFrame(() => {
+    document.scrollingElement.scrollTop = 0;
+    $('.main').scrollTop = 0;
+    const panel=$('#'+page+' > .panel');
+    if(panel) panel.scrollTop=0;
+  });
 }
 function askEvidence(){
   return new Promise(resolve=>{
@@ -295,11 +287,12 @@ function render(){
   localizeShell();
   updateClock();
   const doingTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
-  document.body.classList.toggle('focus-active',!!doingTask && activePage==='dashboard');
+  document.body.classList.remove('focus-active');
   $('#dashboard')?.classList.toggle('focus-first', !!(state.tasks||[]).some(t=>!t.done && t.status!=='skipped'));
   const hasGoal = !!(state.goal && state.goal !== '[object Object]' && String(state.goal).trim());
   $('#goal').textContent = state.goal || '尚未设置目标';
   if($('#goalSelect')) $('#goalSelect').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
+  if($('#goalSelectTop')) $('#goalSelectTop').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   $('#goalsText').value = (state.goals && state.goals.length ? state.goals : (state.goal ? [state.goal] : [])).join('\n');
   const gd=state.goal_details||{};
   if($('#goalOutcome')) $('#goalOutcome').value=gd.outcome||'';
@@ -325,7 +318,7 @@ function render(){
   $('#autostart').checked = !!state.autostart;
   if($('#workspace')) $('#workspace').value = state.workspace || '';
   $('#generate').disabled = !hasGoal;
-  $('#generate').hidden = !!(state.tasks||[]).length;
+  $('#generate').hidden = false;
   if($('#genAvailableMinutes')) $('#genAvailableMinutes').value = state.task_gen?.available_minutes || 120;
   if($('#genTaskCount')) $('#genTaskCount').value = state.task_gen?.task_count || 3;
   if($('#genMaxTaskMinutes')) $('#genMaxTaskMinutes').value = state.task_gen?.max_task_minutes || 45;
@@ -403,7 +396,7 @@ function localizeShell(){
     '.dash-tasks .panel-head h3':'任务队列',
     '#addTask':'新增',
     '.motivation-panel .panel-head h3':'执行反馈',
-    '.motivation-score small':'当前积分',
+    '.motivation-score small':'积分',
     '.streak-grid > div:first-child small':'连续完成',
     '.streak-grid > div:last-child small':'最佳连续',
     '.recovery-box small':'补救行动',
@@ -427,45 +420,33 @@ function renderCurrentTaskBar(){
   const done=task.done_definition||task.expected_output||task.acceptance||'产出可检查的结果';
   const ancestry=[state.goal,task.milestone||'今日执行',title].filter(Boolean);
   const started=task.started_at ? new Date(task.started_at).getTime() : 0;
-  const elapsed=Math.max(0,Number(task.actual_minutes)||0)+(started&&task.status==='doing'?Math.max(0,Math.floor((Date.now()-started)/60000)):0);
-  const goals=(state.goals||[]).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('')||'<option value="0">尚未设置目标</option>';
-  const selector=task.status==='doing'?'':`<select id="goalSelect" class="focus-goal-select">${goals}</select>`;
-  const action=task.status==='doing'?'':`<button class="primary" data-start-task="${idx}">立即开始</button>`;
-  if(task.status==='doing'){
-    const skills=state.user_model?.skills||{}, skill=skills[task.skill_id]||{};
-    const acceptance=task.acceptance_result||{};
-    const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
-    const nextTask=(state.tasks||[]).slice(idx+1).find(t=>!t.done&&t.status!=='skipped');
-    const doneCount=(state.tasks||[]).filter(t=>t.done).length, total=Math.max(1,(state.tasks||[]).length);
-    bar.className='current-task-bar focus-workspace';
-    bar.innerHTML=`<div class="focus-canvas">
-      <header class="focus-heading"><h2>专注执行</h2><small>当前任务</small><b>${escapeHtml(title)}</b></header>
-      <div class="focus-timer"><small>已用时间</small><strong id="focusElapsed" data-started="${escapeHtml(task.started_at||'')}" data-actual="${Number(task.actual_minutes)||0}">${formatFocusElapsed(task)}</strong></div>
-      <div class="focus-details">
-        <span>下一步要做</span><b>${escapeHtml(next)}</b>
-        <span>验收条件</span><b>${escapeHtml(done)}</b>
-        ${task.skill_id?`<span>知识点</span><b><code>${escapeHtml(task.skill_id)}</code></b>
-        <span>掌握度</span><b class="focus-mastery"><i style="width:${Math.round((skill.mastery||0)*100)}%"></i><em>${Math.round((skill.mastery||0)*100)}%</em></b>`:''}
-      </div>
-      ${task.skill_id?`<div class="focus-rating"><span>回忆质量</span><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
-      ${acceptance.reason?`<div class="focus-acceptance"><b>${acceptance.decision==='accepted'?'验收通过':'需要补交'}</b><span>${escapeHtml(acceptance.reason)}</span>${(acceptance.missing||[]).length?`<small>缺少：${escapeHtml(acceptance.missing.join('；'))}</small>`:''}${(acceptance.next_steps||[]).length?`<small>下一步：${escapeHtml(acceptance.next_steps[0])}</small>`:''}${evidenceCount&&!task.done?`<button class="primary" data-ai-evaluate="${idx}">重新验收</button>`:''}</div>`:''}
-      <label class="focus-evidence"><input data-evidence-file="${idx}" type="file" multiple><b>上传学习证据</b><span>${evidenceCount?`已上传 ${evidenceCount} 项，可继续添加`:'支持图片、PDF、代码与文档'}</span></label>
-      <footer class="focus-actionbar"><button data-session-action="pause" data-session-idx="${idx}">暂停</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">提交验收</button></footer>
+  const elapsed=Math.max(0,Number(task.actual_seconds)||0)/60+(started&&task.status==='doing'?Math.max(0,(Date.now()-started)/60000):0);
+  const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
+  const acceptanceItems=String(done).split(/[；;\n]/).map(x=>x.trim()).filter(Boolean).slice(0,3);
+  const taskMeta=[typeName(task.type),task.estimated_minutes?`${task.estimated_minutes} 分钟`:'',task.difficulty?`难度 ${task.difficulty}`:'',task.milestone||'',task.skill_id||''].filter(Boolean);
+  const taskStatusLabel={doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延'}[task.status]||'待开始';
+  const timerText=formatFocusElapsed(task);
+  bar.className='current-task-bar mission-task';
+  bar.innerHTML=`<div class="mission-head"><b>当前任务</b></div><article class="mission-card">
+    <div class="mission-status"><span><i></i>${taskStatusLabel}${task.status==='doing'&&task.started_at?`　<small>开始于 ${new Date(task.started_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</small>`:''}</span><button data-goto-queue>查看历史任务</button></div>
+    <div class="mission-title"><h2>${escapeHtml(title)}</h2><div><small>已用时</small><strong id="focusElapsed" data-started="${task.status==='doing'?escapeHtml(task.started_at||''):''}" data-actual="${Number(task.actual_seconds)||0}">${timerText}</strong><span>◷　预计 ${Number(task.estimated_minutes)||45}:00</span></div></div>
+    <div class="mission-meta">${taskMeta.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div>
+    ${task.description?`<p class="mission-description">${escapeHtml(task.description)}</p>`:''}
+    <h4>下一步行动</h4><p class="mission-next">${escapeHtml(next)}</p>
+    <div class="mission-info">
+      <div><b>交付物</b><span>${escapeHtml(task.expected_output||task.done_definition||'提交可检查的结果')}</span></div>
+      <div><b>验收标准</b><span>${escapeHtml(task.acceptance||done)}</span></div>
     </div>
-    <aside class="focus-rail">
-      <section><h3>下一任务</h3><p>${escapeHtml(nextTask?.title||nextTask?.text||'完成当前任务后生成')}</p></section>
-      <section><h3>今日进度</h3><b>${doneCount}/${total} <small>项任务已完成</small></b><div class="focus-progress"><i style="width:${Math.round(doneCount*100/total)}%"></i></div></section>
-    </aside>`;
-    return;
-  }
-  bar.className='current-task-bar';
-  bar.innerHTML=`<div class="focus-first-copy">${selector}<nav class="goal-ancestry" aria-label="目标路径">${ancestry.map(escapeHtml).join('<i>→</i>')}</nav><small>${task.status==='doing'?`已投入 ${elapsed} 分钟`:'当前任务'}</small><b>${escapeHtml(title)}</b><span>下一步：${escapeHtml(next)}</span><em>验收标准：${escapeHtml(done)}</em></div>${action}`;
+    ${task.skill_id?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
+    <h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label>
+    <footer>${task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`}</footer>
+  </article>`;
 }
 
 function renderSessionControls(){
   const bar=$('#currentTaskBar'), task=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
   if(!bar||!task) return;
-  if(bar.classList.contains('focus-workspace')) return;
+  if(bar.classList.contains('focus-workspace') || bar.classList.contains('mission-task')) return;
   const idx=(state.tasks||[]).indexOf(task);
   const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
   let box=bar.querySelector('.focus-first-actions');
@@ -480,12 +461,7 @@ function renderFocusProfile(){
 function renderPrimaryAction(){
   const actions=$('.actions'); if(!actions) return;
   let b=$('#primaryAction');
-  if(!b){ b=document.createElement('button'); b.id='primaryAction'; b.className='primary'; actions.insertBefore(b, $('#evaluate')); }
-  const pending=(state.tasks||[]).some(t=>!t.done && t.status!=='skipped');
-  if(!state.goal?.trim()){ b.textContent='设置目标'; b.dataset.primaryAction='settings'; }
-  else if(!state.tasks?.length){ b.remove(); return; }
-  else if(pending){ b.textContent='继续当前任务'; b.dataset.primaryAction='tasks'; }
-  else { b.textContent='保存今日复盘'; b.dataset.primaryAction='archive'; }
+  if(b) b.remove();
 }
 function legacyRenderCurrentTaskBar(){
   let bar=$('#currentTaskBar');
@@ -498,7 +474,7 @@ function legacyRenderCurrentTaskBar(){
   const done = task.done_definition || task.expected_output || task.acceptance || '完成这一步并留下可继续的位置';
   const goals=(state.goals||[]).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   const started=task.started_at ? new Date(task.started_at).getTime() : 0;
-  const elapsed=Math.max(0,Number(task.actual_minutes)||0)+(started&&task.status==='doing'?Math.max(0,Math.floor((Date.now()-started)/60000)):0);
+  const elapsed=Math.max(0,Number(task.actual_seconds)||0)/60+(started&&task.status==='doing'?Math.max(0,(Date.now()-started)/60000):0);
   const selector=task.status==='doing'?'':`<select id="goalSelect" class="focus-goal-select">${goals}</select>`;
   const action=task.status==='doing'?'':`<button class="primary" data-start-task="${idx}">立即开始</button>`;
   bar.innerHTML=`<div class="focus-first-copy">${selector}<small>${task.status==='doing'?`已投入 ${elapsed} 分钟`:'今天的主线任务'}</small><b>${escapeHtml(title)}</b><span>下一步：${escapeHtml(next)}</span><em>完成标准：${escapeHtml(done)}</em></div>${action}`;
@@ -690,14 +666,37 @@ function renderReview(){
   $('#quitList').innerHTML=(state.quit_attempts||[]).slice().reverse().map(x=>fmt('退出申请', x)).join('') || '<p class="hint">暂无退出记录。</p>';
   $('#eventList').innerHTML=(state.events||[]).slice().reverse().map(x=>fmt(eventName(x.kind), x)).join('') || '<p class="hint">暂无事件。</p>';
   $('#archiveList').innerHTML=(state.archives||[]).slice().reverse().map(a=>`<div class="log-item"><div><b>${escapeHtml(a.date)}</b><button data-remove-archive="${escapeHtml(a.date)}" title="删除这条归档">删除</button></div><p>${escapeHtml(a.goal||'')} · 完成 ${doneCount(a)}/${(a.tasks||[]).length} · ${a.completion_pct||0}%</p></div>`).join('') || '<p class="hint">暂无归档。</p>';
+  renderActivityHeatmap();
+}
+function renderActivityHeatmap(){
+  const box=$('#activityHeatmap'); if(!box) return;
+  const values=new Map();
+  for(const row of [...(state.history||[]),...(state.archives||[])]){
+    const date=String(row?.date||'').slice(0,10); if(date) values.set(date,Math.max(values.get(date)||0,Number(row.completion_pct)||0));
+  }
+  const today=new Date(), dateKey=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  values.set(dateKey(today),Math.max(values.get(dateKey(today))||0,Number(state.completion_pct)||0));
+  const month=new Date(today.getFullYear(),today.getMonth()-heatmapMonthOffset,1), days=new Date(month.getFullYear(),month.getMonth()+1,0).getDate(), cells=[]; let active=0;
+  for(const label of ['日','一','二','三','四','五','六']) cells.push(`<span>${label}</span>`);
+  for(let pad=0;pad<month.getDay();pad++) cells.push('<i class="empty"></i>');
+  for(let day=1;day<=days;day++){
+    const date=new Date(month.getFullYear(),month.getMonth(),day), key=dateKey(date), pct=Math.max(0,Math.min(100,values.get(key)||0));
+    if(pct>0) active++;
+    const level=pct===0?0:pct<25?1:pct<50?2:pct<75?3:4;
+    cells.push(`<i data-level="${level}" title="${key} · 完成 ${Math.round(pct)}%" aria-label="${key} 完成 ${Math.round(pct)}%"><small>${day}</small></i>`);
+  }
+  box.innerHTML=`<section class="heatmap-month"><div>${cells.join('')}</div></section>`;
+  $('#heatmapTotal').textContent=`${month.getFullYear()}年${month.getMonth()+1}月 · ${active} 天有记录`;
+  box.onwheel=e=>{ e.preventDefault(); const next=Math.max(0,Math.min(11,heatmapMonthOffset+(e.deltaY>0||e.deltaX>0?1:-1))); if(next!==heatmapMonthOffset){ heatmapMonthOffset=next; renderActivityHeatmap(); } };
 }
 const _renderReview = renderReview;
 renderReview = function(){
   _renderReview();
-  const graph=state.knowledge_graph||{}, summary=$('#reviewSummary');
-  if(summary && (graph.nodes||[]).length){
+  const graph=state.knowledge_graph||{}, host=$('#knowledgeGraphHost');
+  if(host && (graph.nodes||[]).length){
     const edges=graph.edges||[];
-    summary.insertAdjacentHTML('beforeend', `<div id="knowledgeGraph" class="knowledge-graph">
+    host.hidden=false;
+    host.innerHTML=`<div id="knowledgeGraph" class="knowledge-graph">
       <div class="panel-head"><h3>知识图谱</h3><span>${graph.nodes.length} 个知识点 · ${edges.length} 条前置关系</span></div>
       <div class="knowledge-nodes">${graph.nodes.map(node=>{
         const parents=edges.filter(edge=>edge.to===node.id).map(edge=>edge.from);
@@ -707,8 +706,10 @@ renderReview = function(){
           ${node.title&&node.title!==node.id?`<small>${escapeHtml(node.id)}</small>`:''}
           <small>${escapeHtml(node.state||'New')}${parents.length?` · 前置：${escapeHtml(parents.join('、'))}`:' · 起点'}</small>
         </div>`;
-      }).join('')}</div>
-    </div>`);
+      }).join('')}</div></div>`;
+  } else if(host){
+    host.hidden=false;
+    host.innerHTML='<div class="knowledge-graph"><div class="panel-head"><h3>知识图谱</h3><span>0 个知识点</span></div><div class="knowledge-empty">完成一次学习任务后，这里会显示能力节点与前置关系。</div></div>';
   }
   $$('#archiveList .log-item').forEach((el, i) => {
     el.dataset.archive = String((state.archives || []).length - 1 - i);
@@ -922,7 +923,8 @@ function editorTasks(){
 }
 function formatFocusElapsed(task){
   const started=task.started_at?new Date(task.started_at).getTime():0;
-  const seconds=Math.max(0,Math.round((Number(task.actual_minutes)||0)*60)+(started?Math.floor((Date.now()-started)/1000):0));
+  const accumulated=Number(task.actual_seconds)||0;
+  const seconds=Math.floor(Math.max(0,accumulated+(task.status==='doing'&&started?Math.floor((Date.now()-started)/1000):0)));
   return [Math.floor(seconds/3600),Math.floor(seconds%3600/60),seconds%60].map(x=>String(x).padStart(2,'0')).join(':');
 }
 function updateClock(){
@@ -930,7 +932,7 @@ function updateClock(){
   const timer=$('#focusElapsed');
   if(timer){
     const started=timer.dataset.started?new Date(timer.dataset.started).getTime():0;
-    const seconds=Math.max(0,Math.round((Number(timer.dataset.actual)||0)*60)+(started?Math.floor((Date.now()-started)/1000):0));
+    const seconds=Math.max(0,Math.round(Number(timer.dataset.actual)||0)+(started?Math.floor((Date.now()-started)/1000):0));
     timer.textContent=[Math.floor(seconds/3600),Math.floor(seconds%3600/60),seconds%60].map(x=>String(x).padStart(2,'0')).join(':');
   }
 }
@@ -1175,6 +1177,36 @@ async function run(name){
   }
 }
 document.addEventListener('click', async e=>{
+  const reviewLog=e.target.closest?.('[data-review-log]');
+  if(reviewLog){
+    const mode=reviewLog.dataset.reviewLog, events=mode==='events', archives=mode==='archives', modal=$('#reviewLogModal');
+    $('#reviewLogTitle').textContent=events?'事件流':archives?'每日归档':'退出记录';
+    $('#reviewLogSubtitle').textContent=events?'查看任务与系统操作记录。':archives?'查看或保存每日复盘归档。':'查看退出申请及原因。';
+    $('#eventList').hidden=!events; $('#archiveList').hidden=!archives; $('#quitList').hidden=events||archives; $('#archiveToday').hidden=!archives;
+    setModalOpen(modal,true); return;
+  }
+  if(e.target.id==='closeReviewLog'||e.target.id==='doneReviewLog'||e.target.id==='reviewLogModal'){
+    setModalOpen($('#reviewLogModal'),false); return;
+  }
+  if(e.target.closest?.('#openAdvancedSettings')){
+    const modal=$('#advancedSettingsModal');
+    document.body.appendChild(modal);
+    setModalOpen(modal,true);
+    return;
+  }
+  if(e.target.closest?.('#closeAdvancedSettings') || e.target.closest?.('#cancelAdvancedSettings') || (e.target.id==='advancedSettingsModal')){
+    setModalOpen($('#advancedSettingsModal'),false);
+    return;
+  }
+  if(e.target.closest?.('#saveAdvancedSettings')){
+    $('#saveSettings').click();
+    setModalOpen($('#advancedSettingsModal'),false);
+    return;
+  }
+  if(e.target.closest?.('[data-goto-queue]')){
+    $('#taskList')?.scrollIntoView({behavior:'smooth',block:'start'});
+    return;
+  }
   if(e.target.closest?.('[data-start-recovery]')){
     try{ const r=await api('recovery',{}); await api('task-state',{idx:r.idx,status:'doing'}); toast('补救行动已开始'); await load(); }
     catch(err){ toast('当前没有需要补救的任务',false); }
@@ -1307,11 +1339,11 @@ document.addEventListener('click', async e=>{
     $('#'+page).classList.add('active');
     setPage(page);
     activePage = page;
-    document.body.classList.toggle('focus-active', page==='dashboard' && (state.tasks||[]).some(t=>!t.done&&t.status==='doing'));
+    document.body.classList.remove('focus-active');
     return;
   }
   const nav = e.target.closest('.nav-item');
-  if(nav){ activePage=nav.dataset.page; $$('.nav-item').forEach(x=>x.classList.remove('active')); nav.classList.add('active'); $$('.page').forEach(x=>x.classList.remove('active')); $('#'+nav.dataset.page).classList.add('active'); document.body.classList.toggle('focus-active',activePage==='dashboard'&&(state.tasks||[]).some(t=>!t.done&&t.status==='doing')); setPage(nav.dataset.page); if(activePage==='dashboard') refreshLive(); return; }
+  if(nav){ activePage=nav.dataset.page; $$('.nav-item').forEach(x=>x.classList.remove('active')); nav.classList.add('active'); $$('.page').forEach(x=>x.classList.remove('active')); $('#'+nav.dataset.page).classList.add('active'); document.body.classList.remove('focus-active'); setPage(nav.dataset.page); if(activePage==='dashboard') refreshLive(); return; }
   if(e.target.id==='refresh') return load();
   if(e.target.id==='generate') return run('generate');
   if(e.target.id==='evaluate') return run('evaluate');
@@ -1582,6 +1614,7 @@ document.addEventListener('change', async e=>{
     return;
   }
   if(e.target.id==='goalSelect'){ await api('active-goal',{active_goal:+e.target.value||0}); await load(); }
+  if(e.target.id==='goalSelectTop'){ await api('active-goal',{active_goal:+e.target.value||0}); await load(); }
 });
 document.addEventListener('input', e=>{
   if(e.target.dataset.catalogSearch!==undefined){ renderCatalogPicker(e.target.closest('[data-catalog-row]'), e.target.value); return; }
@@ -1601,28 +1634,22 @@ async function loadProcesses(){
   renderDesktop();
   renderCatalog();
 }
-if(claimFrontend()){
-  // Keep the first-level navigation about action and review; advanced app rules stay available in settings/code paths.
+// Keep the first-level navigation about action and review; advanced app rules stay available in settings/code paths.
   document.querySelector('[data-page="review"] span')?.replaceChildren('记录');
   document.querySelector('[data-page="review"]')?.setAttribute('title','记录');
   setInterval(updateClock,1000);
   setInterval(refreshLive,2000);
   setInterval(heartbeat,4000);
   // Claim the backend session before the first protected state request.
-  ensureSession().then(ok=>{
+ensureSession().then(ok=>{
     if(!ok) throw new Error('无法建立本地会话，请重试或接管窗口');
     return load();
-  }).then(showPrivacyNotice).then(loadProcesses).catch(e=>{ toast(e.message,false); if(confirmDlg('本地会话被其他窗口占用。关闭旧窗口后，是否立即重试？')) location.reload(); });
-}else{
-  const takeover=document.createElement('button');
-  takeover.id='takeoverFrontend'; takeover.className='primary'; takeover.textContent='尝试接管窗口';
-  takeover.onclick=()=>{ localStorage.removeItem('taskVergeFrontend'); location.reload(); };
-  document.body.innerHTML = '<div class="shell"><main class="main"><section class="page active"><div class="hero"><div class="hero-copy"><span id="statusPill">已拦截</span><h2>Task Verge 已在另一个窗口运行</h2><p>请回到已打开的桌面窗口继续使用。</p></div></div></section></main></div>';
-  setTimeout(()=>document.querySelector('.hero-copy')?.appendChild(takeover),0);
-}
+}).then(showPrivacyNotice).then(loadProcesses).catch(e=>{ toast(e.message,false); if(confirmDlg('本地会话被其他窗口占用。关闭旧窗口后，是否立即重试？')) location.reload(); });
 async function claimBackendSession(){
   try{
-    const r = await fetch('/api/claim');
+    const desktopToken=new URLSearchParams(location.search).get('desktop_token');
+    const headers=desktopToken?{'X-TaskVerge-Desktop':desktopToken}:{};
+    const r = await fetch('/api/claim',{headers});
     const j = await r.json();
     if(j.ok){ sessionToken = j.token; return true; }
   }catch(_){}

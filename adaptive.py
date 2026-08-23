@@ -9,6 +9,7 @@ from learning import (ability_profile, diagnostic_dimensions, due_review_task, f
                       normalize_diagnostic_dimensions, set_diagnostic_dimensions,
                       task_consistency_issues, task_semantic_key,
                       record_learning_outcome, sync_task_graph, task_is_unlocked)
+from utils import task_actual_minutes
 
 
 OUTCOME_POINTS = {"accepted": 10, "partial": 2, "skipped": -5, "failed": -3}
@@ -59,8 +60,8 @@ def record_task_outcome(task, passed, now=None):
     now = now or time.time()
     if task.get("started_at"):
         try:
-            elapsed = max(0, int((now - datetime.fromisoformat(task["started_at"]).timestamp()) / 60))
-            task["actual_minutes"] = int(task.get("actual_minutes", 0) or 0) + elapsed
+            elapsed = max(0, now - datetime.fromisoformat(task["started_at"]).timestamp())
+            task["actual_seconds"] = round(float(task.get("actual_seconds", 0) or 0) + elapsed, 3)
         except (TypeError, ValueError):
             pass
         task["started_at"] = ""
@@ -90,7 +91,7 @@ def assess_feedback(state, task_index, text, kind="", source="user", now=None):
     task = tasks[task_index]
     kind = classify_feedback(text, kind)
     estimate = max(5, int(task.get("estimated_minutes", 30) or 30))
-    actual = max(0, int(task.get("actual_minutes", 0) or 0))
+    actual = max(0, int(task_actual_minutes(task)))
     attempts = max(0, int(task.get("attempts", 0) or 0))
     failed = task.get("acceptance_result", {}).get("pass") is False and bool(task.get("acceptance_result"))
 
@@ -214,7 +215,7 @@ def passive_review(state, now=None):
         elapsed = int((now - started) / 60)
         signal = "overrun:{}:{}".format(task.get("id", index), estimate)
         if elapsed >= estimate * 1.5 and signal not in seen:
-            task["actual_minutes"] = elapsed
+            task["actual_seconds"] = elapsed * 60
             decision = record_feedback(state, index, "实际耗时明显超过预计", "too_hard", "system")
             seen.append(signal); state["adaptive_signals"] = seen[-100:]
             return decision
@@ -228,7 +229,7 @@ def complete_review(state, foreground=None):
     accepted = [task for task in tasks if task.get("acceptance_result")]
     passed = sum(1 for task in accepted if task["acceptance_result"].get("pass"))
     estimates = [max(5, int(task.get("estimated_minutes", 30) or 30)) for task in tasks]
-    actuals = [max(0, int(task.get("actual_minutes", 0) or 0)) for task in tasks]
+    actuals = [max(0, int(task_actual_minutes(task))) for task in tasks]
     measured = [(actual, estimate) for actual, estimate in zip(actuals, estimates) if actual]
     overrun = round(sum(actual / estimate for actual, estimate in measured) / len(measured), 2) if measured else 1.0
     completion = round(done / total, 2) if total else 0.0

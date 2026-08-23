@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 
 from fsrs import Card, Rating, Scheduler, State
+from utils import task_actual_minutes
 
 
 def fallback_task_templates(goal):
@@ -283,7 +284,7 @@ def _rating(state, task, passed):
     if latest.get("kind") == "too_easy":
         return Rating.Easy
     estimate = max(1, int(task.get("estimated_minutes", 30) or 30))
-    if int(task.get("attempts", 0) or 0) >= 2 or int(task.get("actual_minutes", 0) or 0) > estimate * 1.25:
+    if int(task.get("attempts", 0) or 0) >= 2 or task_actual_minutes(task) > estimate * 1.25:
         return Rating.Hard
     return Rating.Good
 

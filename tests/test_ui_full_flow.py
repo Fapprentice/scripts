@@ -31,8 +31,21 @@ def test_complete_adaptive_product_loop_from_ui():
         page.wait_for_load_state("networkidle")
         assert page.locator('button.nav-item[data-page="tasks"]').count() == 0
 
-        # 1-3: set goal → clarify → establish measurable standards.
+        # Navigation pages are mutually exclusive even when dashboard keeps focus-first state.
+        _go(page, "review")
+        assert page.locator("#review").is_visible()
+        assert page.locator("#activityHeatmap .heatmap-month").count() == 1
+        assert page.locator('[data-review-log="archives"]').is_visible()
+        assert not page.locator("#dashboard").is_visible()
         _go(page, "settings")
+        assert page.locator("#settings").is_visible()
+        assert not page.locator("#dashboard").is_visible()
+        page.locator("#openAdvancedSettings").click()
+        assert page.locator("#advancedSettingsModal").is_visible()
+        page.locator("#cancelAdvancedSettings").click()
+        assert not page.locator("#advancedSettingsModal").is_visible()
+
+        # 1-3: set goal → clarify → establish measurable standards.
         page.locator("#goalsText").fill("UI闭环测试目标")
         page.locator("#goalOutcome").fill("完成一个可运行的本地成果")
         page.locator("#goalDeadline").fill("2026-12-31")
@@ -62,7 +75,10 @@ def test_complete_adaptive_product_loop_from_ui():
         # 6: execution monitoring starts from the visible current-task button.
         begin = page.locator("#currentTaskBar [data-start-task]")
         begin.click()
-        page.wait_for_function("() => document.body.classList.contains('focus-active')")
+        page.locator('#currentTaskBar [data-session-action="pause"]').wait_for(timeout=10000)
+        assert page.locator("#dashboard").is_visible()
+        assert page.locator("#taskList").is_visible()
+        assert "focus-active" not in (page.locator("body").get_attribute("class") or "")
         ratings = page.locator('#currentTaskBar [data-recall-rating]')
         if ratings.count():
             good = page.locator('#currentTaskBar [data-recall-rating="good"]')
@@ -74,9 +90,13 @@ def test_complete_adaptive_product_loop_from_ui():
             }""", timeout=10000)
         page.locator('#currentTaskBar [data-session-action="pause"]').click()
         page.locator("#taskList .task").filter(has_text="已暂停").first.wait_for(timeout=10000)
+        assert page.locator("#focusElapsed").inner_text() == "00:00:00"
+        assert "开始于" not in page.locator("#currentTaskBar").inner_text()
         assert "focus-active" not in (page.locator("body").get_attribute("class") or "")
         page.locator("#currentTaskBar [data-start-task]").click()
-        page.wait_for_function("() => document.body.classList.contains('focus-active')")
+        page.locator('#currentTaskBar [data-session-action="pause"]').wait_for(timeout=10000)
+        assert page.locator("#focusElapsed").get_attribute("data-actual") == "0"
+        assert page.locator("#focusElapsed").inner_text().startswith("00:00:")
 
         # 10: submit evidence through the visible file picker.
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as attempt:

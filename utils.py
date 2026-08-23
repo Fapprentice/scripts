@@ -80,6 +80,17 @@ def _nat(v):
     except (TypeError, ValueError): return 0
 
 
+def _seconds(seconds, minutes=0):
+    try: return max(0.0, float(seconds if seconds is not None else float(minutes or 0) * 60))
+    except (TypeError, ValueError): return 0
+
+def task_actual_seconds(task):
+    return _seconds(task.get("actual_seconds"), task.get("actual_minutes"))
+
+def task_actual_minutes(task):
+    return task_actual_seconds(task) / 60
+
+
 # ---------------------------------------------------------------------------
 # Task normalisation
 # ---------------------------------------------------------------------------
@@ -121,7 +132,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "started_at": task_text(t.get("started_at")),
             "completed_at": task_text(t.get("completed_at")),
             "attempts": _nat(t.get("attempts")),
-            "actual_minutes": _nat(t.get("actual_minutes")),
+            "actual_seconds": task_actual_seconds(t),
             "ended_at": task_text(t.get("ended_at")),
             "continuation_note": task_text(t.get("continuation_note")),
             "next_action": task_text(t.get("next_action")),
@@ -142,7 +153,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         "evidence": "", "app_reason": "", "app_confidence": 0,
         "acceptance_result": {}, "difficulty": 2, "source": "legacy", "locked": False,
         "created_at": datetime.now().isoformat(), "started_at": "", "completed_at": "",
-        "attempts": 0, "actual_minutes": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
+        "attempts": 0, "actual_seconds": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
         "skill_id": "", "prerequisites": [], "learning_task_type": "", "review_due_at": "",
         "recall_rating": "",
     }

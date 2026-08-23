@@ -9,6 +9,13 @@ sys.path.insert(0, PROJECT_ROOT)
 import utils
 
 
+def test_task_time_uses_fractional_seconds_as_single_source():
+    task = utils.normalize_task({"title": "x", "actual_seconds": 7.75, "actual_minutes": 99})
+    assert task["actual_seconds"] == 7.75
+    assert "actual_minutes" not in task
+    assert utils.task_actual_minutes(task) == 7.75 / 60
+
+
 class TestTaskText:
     def test_normal_string(self):
         assert utils.task_text("hello") == "hello"
@@ -24,10 +31,11 @@ class TestTaskText:
         assert utils.task_text(None) == ""
 
     def test_focus_session_fields_survive_normalization(self):
-        task = utils.normalize_task({"title": "阅读", "status": "partial", "type": "behavior", "continuation_note": "读到第 5 页"})
+        task = utils.normalize_task({"title": "阅读", "status": "partial", "type": "behavior", "continuation_note": "读到第 5 页", "actual_seconds": 423})
         assert task["status"] == "partial"
         assert task["verification_mode"] == "light"
         assert task["continuation_note"] == "读到第 5 页"
+        assert task["actual_seconds"] == 423
 
 
 class TestValueText:

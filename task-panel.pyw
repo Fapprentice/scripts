@@ -2,7 +2,7 @@
 """Task Verge desktop application."""
 import copy, csv, hashlib, json, os, re, sys, time, struct, socket, random, atexit, warnings, shutil
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-import subprocess, threading, urllib.request, urllib.error, tempfile, traceback, ctypes
+import subprocess, threading, urllib.request, urllib.error, urllib.parse, tempfile, traceback, ctypes
 import http.server, mimetypes, webbrowser
 from email import policy as email_policy
 from email.parser import BytesParser
@@ -54,7 +54,7 @@ _bl("boot: pid={} exe={} frozen={}".format(os.getpid(), sys.executable, getattr(
 UI_THEME = 'light'
 
 def _app_dir():
-    """Return persistent data directory. Uses %LocalAppData%\TaskVerge
+    r"""Return persistent data directory. Uses %LocalAppData%\TaskVerge
     for data files, falls back to script directory."""
     try: script_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
     except NameError: return os.getcwd()
@@ -750,6 +750,11 @@ def fallback_tasks(c, why):
 def cli_gen():
     print(gen_tasks())
 
+def reset_task_timer(task):
+    task["actual_seconds"] = 0
+    task.pop("actual_minutes", None)
+    task["started_at"] = ""
+
 def evaluate_task(task_idx):
     c=ensure_goal_state(lc()); items=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
     if task_idx<0 or task_idx>=len(items): raise ValueError("任务索引越界")
@@ -764,10 +769,11 @@ def evaluate_task(task_idx):
         if result.get("needs_llm") and cloud_enabled and valid_deepseek_key(dk()):
             result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
     passed=result.get("decision")=="accepted"
-    result=norm_acceptance_result(result,passed); task["acceptance_result"]=result; task["status"]="done" if passed else task.get("status","pending")
+    result=norm_acceptance_result(result,passed); task["acceptance_result"]=result; task["status"]="done" if passed else "pending"
     if result["decision"] in ("accepted","rejected"):
         adaptive.record_learning_outcome(c, task, passed)
         adaptive.record_outcome(c, "accepted" if passed else "failed")
+    reset_task_timer(task)
     flags=list(c.get("done_flags",[])); flags.extend([False]*max(0,len(items)-len(flags))); flags[task_idx]=passed
     c["tasks"]=items; c["done_flags"]=flags; sync_pct(c); save_goal_state(c); evlog(c,"task_acceptance","通过" if passed else "未通过",{"idx":task_idx}); sc(c)
     return {"ok":True,"pass":passed,"result":result}
@@ -784,7 +790,7 @@ def cli_eval():
         results=[norm_acceptance_result({"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验说明"],"next_steps":["上传交付物后重新点击 AI 验收"]}) for _ in items]
         ah({"date":today(),"goal":c.get("goal",""),"goal_id":gid(c),"tasks":items,"completion_pct":0,"summary":"未提交交付物或证据，AI 未放行","acceptance_results":results})
         c["tasks"]=items; c["done_flags"]=[False]*len(items); c["completion_pct"]=0
-        for i,t in enumerate(c["tasks"]): t["status"]="pending"; t["acceptance_result"]=results[i]
+        for i,t in enumerate(c["tasks"]): t["status"]="pending"; t["acceptance_result"]=results[i]; reset_task_timer(t)
         save_goal_state(c); sc(c); return print("OK 0%")
     k = dk()
     today_s = date.today().isoformat()
@@ -827,7 +833,7 @@ def cli_eval():
 
         # Apply no-evidence overrides (unchanged from original logic)
         for i, missing in enumerate(no_evidence):
-            if missing and t.get("verification_mode") != "none":
+            if missing and items[i].get("verification_mode") != "none":
                 done[i] = False
                 results[i] = {"pass": False, "reason": "未提交交付物或证据", "missing": ["交付物文件或可核验证据"],
                     "next_steps": ["上传交付物后重新验收"], "evidence_refs": [],
@@ -842,6 +848,7 @@ def cli_eval():
         for i, t in enumerate(c["tasks"]):
             t["status"] = "done" if c["done_flags"][i] else "pending"
             adaptive.record_task_outcome(t,c["done_flags"][i])
+            reset_task_timer(t)
             ar = graded[i]
             ar["basis"] = {"foreground_time": fg_top, "evidence": basis["evidence"][i] if i < len(basis["evidence"]) else {}}
             ar.setdefault("rules_first", True)
@@ -885,6 +892,7 @@ def cli_eval():
     for i,t in enumerate(c["tasks"]):
         t["status"]="done" if c["done_flags"][i] else "pending"
         adaptive.record_task_outcome(t,c["done_flags"][i])
+        reset_task_timer(t)
         ar=graded[i]
         ar["basis"]={"foreground_time":fg_top,"evidence":basis["evidence"][i] if i < len(basis["evidence"]) else {}}
         t["acceptance_result"]=ar
@@ -981,9 +989,10 @@ def fg_title():
 _SESSION = {"token": None, "ts": 0.0}
 _SESSION_TTL = 8.0  # 秒，超过该时间无心跳则视为失活
 import secrets as _secrets
-def claim_session():
+_DESKTOP_CLAIM_SECRET = _secrets.token_urlsafe(24)
+def claim_session(force=False):
     now = time.time()
-    if _SESSION["token"] and now - _SESSION["ts"] < _SESSION_TTL:
+    if not force and _SESSION["token"] and now - _SESSION["ts"] < _SESSION_TTL:
         return None  # 已有活跃会话
     tok = _secrets.token_hex(8)
     _SESSION["token"] = tok
@@ -1785,7 +1794,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             c=ensure_goal_state(lc()); runs=c.get("agent_runs",{}) or {}
             key=gid(c); return self.send_json({"ok":True,"runs":[r for r in list(runs.values())[-50:] if r.get("goal_id")==key]})
         if self.path=="/api/claim":
-            tok = claim_session()
+            supplied = self.headers.get("X-TaskVerge-Desktop", "")
+            tok = claim_session(bool(supplied) and _secrets.compare_digest(supplied, _DESKTOP_CLAIM_SECRET))
             if tok is None:
                 return self.send_json({"ok":False,"message":"另一个窗口正在操作"},409)
             return self.send_json({"ok":True,"token":tok})
@@ -2209,11 +2219,11 @@ def open_desktop(url):
     if focus_window("Task Verge"): return
     for p in [os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe")]:
         if os.path.exists(p):
-            subprocess.Popen([p,"--app="+url,"--window-size=1160,760"],creationflags=_CNW)
+            subprocess.Popen([p,"--app="+url,"--start-maximized"],creationflags=_CNW)
             return
     for p in [os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe")]:
         if os.path.exists(p):
-            subprocess.Popen([p,"--app="+url,"--window-size=1160,760"],creationflags=_CNW)
+            subprocess.Popen([p,"--app="+url,"--start-maximized"],creationflags=_CNW)
             return
     webbrowser.open(url)
 
@@ -2226,8 +2236,9 @@ def run_native_window(url):
         _bl("native webview unavailable: " + repr(e))
         return False
     try:
-        _MAIN_WINDOW = webview.create_window("Task Verge", url, width=1160, height=760,
-                                             min_size=(900, 640), confirm_close=False)
+        desktop_url = url + ("&" if "?" in url else "?") + "desktop_token=" + urllib.parse.quote(_DESKTOP_CLAIM_SECRET)
+        _MAIN_WINDOW = webview.create_window("Task Verge", desktop_url, width=1160, height=760,
+                                             min_size=(900, 640), maximized=True, confirm_close=False)
         def hide_to_tray():
             try: _MAIN_WINDOW.hide()
             except Exception: pass

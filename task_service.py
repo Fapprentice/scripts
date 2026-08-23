@@ -20,7 +20,9 @@ class TaskService:
         if status == "doing" and task.get("status") != "doing":
             task["started_at"] = datetime.now().isoformat(); task["attempts"] = int(task.get("attempts", 0) or 0) + 1
         elif task.get("status") == "doing" and task.get("started_at"):
-            try: task["actual_minutes"] = int(task.get("actual_minutes", 0) or 0) + max(0, int((time.time() - datetime.fromisoformat(task["started_at"]).timestamp()) / 60))
+            try:
+                previous_seconds = float(task.get("actual_seconds", 0) or 0)
+                task["actual_seconds"] = round(previous_seconds + max(0, time.time() - datetime.fromisoformat(task["started_at"]).timestamp()), 3)
             except (TypeError, ValueError): pass
             task["ended_at"] = datetime.now().isoformat()
         if status == "partial": task["continuation_note"] = self.text(continuation_note)[:500]
