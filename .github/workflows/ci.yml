@@ -1,0 +1,64 @@
+name: Task Verge CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  syntax-and-unit:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check syntax (py_compile)
+        run: |
+          pip install -r requirements.txt
+          python -m py_compile task-panel.pyw
+          python -m py_compile learning.py
+          python -m py_compile acceptance.py
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -x -v --timeout=60 --ignore=tests/test_e2e_main_flow.py 2>$null || python -m unittest discover -s tests -p "test_*.py" -v
+
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: syntax-and-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install -r requirements.txt playwright pytest pytest-playwright
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Start Task Verge (CI mode)
+        run: |
+          Start-Process -NoNewWindow -FilePath python -ArgumentList "task-panel.pyw","--ci"
+          # Wait for server to be ready
+          for ($i=0; $i -lt 20; $i++) {
+            try { $r = Invoke-WebRequest -Uri "http://127.0.0.1:0/api/state" -UseBasicParsing -TimeoutSec 2; break }
+            catch { Start-Sleep 1 }
+          }
+
+      - name: Run E2E tests
+        run: python -m pytest tests/test_e2e_main_flow.py -v --timeout=180
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-screenshots
+          path: tests/screenshots/

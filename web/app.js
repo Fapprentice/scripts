@@ -1,0 +1,1660 @@
+let state = null;
+let focusStatusPill = null;
+let allApps = [];
+let usableApps = [];
+let activePage = 'dashboard';
+let sessionToken = null;
+let sessionClaimPromise = null;
+let _lastFilePickTs = 0;  // guard against render() destroying the file input while picker is open
+const frontendId = String(Date.now())+Math.random().toString(16).slice(2);
+const $ = (s, ctx) => (ctx||document).querySelector(s);
+const $$ = (s, ctx) => [...(ctx||document).querySelectorAll(s)];
+const pageTitles = {
+  dashboard:['总览','今日专注、任务完成度与前台时间。'],
+  rules:['应用分类','管理 AI 应用分类与工作桌面归属。'],
+  review:['复盘','退出记录、事件流与每日归档。'],
+  settings:['设置','目标、生成参数、休息与退出。']
+};
+const runNames = {generate:'生成任务', evaluate:'AI 验收'};
+function claimFrontend(){
+  const now = Date.now();
+  const old = JSON.parse(localStorage.getItem('taskVergeFrontend') || 'null');
+  if(old && old.id !== frontendId && now - old.ts < 5000) return false;
+  localStorage.setItem('taskVergeFrontend', JSON.stringify({id:frontendId, ts:now}));
+  setInterval(()=>localStorage.setItem('taskVergeFrontend', JSON.stringify({id:frontendId, ts:Date.now()})), 2000);
+  addEventListener('beforeunload',()=>{
+    const cur = JSON.parse(localStorage.getItem('taskVergeFrontend') || 'null');
+    if(cur && cur.id === frontendId) localStorage.removeItem('taskVergeFrontend');
+  });
+  return true;
+}
+async function api(path, body){
+  if(!sessionToken && !await ensureSession()) throw new Error('无法建立本地会话');
+  const opt = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
+  opt.headers ||= {};
+  if(sessionToken) opt.headers['X-Session'] = sessionToken;
+  let r;
+  try{
+    r = await fetch('/api/'+path,opt);
+  }catch(e){
+    showModal('网络错误', '无法连接到服务器：'+e.message+'。请检查服务是否在运行。');
+    throw e;
+  }
+  if(r.status===401 && sessionToken){
+    sessionToken = null;
+    if(await ensureSession()){
+      opt.headers['X-Session'] = sessionToken;
+      r = await fetch('/api/'+path,opt);
+    }
+  }
+  if(r.status===409){
+    let msg = '另一个窗口正在操作，请勿并发写入。';
+    try{ const j = await r.json(); msg = j.message || msg; }catch(_){}
+    showModal('会话冲突', msg, 'warn');
+    throw new Error(msg);
+  }
+  if(!r.ok){
+    let msg = await r.text();
+    try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
+    showModal('操作失败', msg);
+    throw new Error(msg);
+  }
+  return r.json();
+}
+async function uploadApi(path, formData){
+  // Ensure we have a session token before POST (re-claim if lost)
+  if(!sessionToken) await ensureSession();
+  let opt = {method:'POST',headers:{},body:formData};
+  if(sessionToken) opt.headers['X-Session'] = sessionToken;
+  let r;
+  try{
+    r = await fetch('/api/'+path,opt);
+  }catch(e){
+    showModal('网络错误', '无法连接到服务器：'+e.message);
+    throw e;
+  }
+  if(r.status===401 && sessionToken){
+    sessionToken = null;
+    if(await ensureSession()){
+      opt.headers['X-Session'] = sessionToken;
+      r = await fetch('/api/'+path,opt);
+    }
+  }
+  // On 409, try to re-claim session and retry once
+  if(r.status===409){
+    sessionToken = null;
+    if(await ensureSession()){
+      opt.headers['X-Session'] = sessionToken;
+      try{
+        r = await fetch('/api/'+path,opt);
+      }catch(e){
+        showModal('网络错误', '无法连接到服务器：'+e.message);
+        throw e;
+      }
+    }
+  }
+  if(r.status===409){
+    let msg = '另一个窗口正在操作，请勿并发写入。';
+    try{ const j = await r.json(); msg = j.message || msg; }catch(_){}
+    showModal('会话冲突', msg, 'warn');
+    throw new Error(msg);
+  }
+  if(!r.ok){
+    let msg = await r.text();
+    try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
+    showModal('操作失败', msg);
+    throw new Error(msg);
+  }
+  return r.json();
+}
+function logEvent(kind, message, extra={}){
+  const headers = {'Content-Type':'application/json'};
+  if(sessionToken) headers['X-Session'] = sessionToken;
+  fetch('/api/event',{method:'POST',headers,body:JSON.stringify({kind,message,extra})}).catch(()=>{});
+}
+function showModal(title, msg, kind='error'){
+  let m = $('#modal');
+  if(!m){
+    m = document.createElement('div');
+    m.id = 'modal';
+    m.className = 'modal-overlay';
+    m.innerHTML = `<div class="modal-box">
+      <h3 class="modal-title"></h3>
+      <p class="modal-msg"></p>
+      <div class="modal-actions"><button class="primary modal-ok">知道了</button></div>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', e=>{
+      if(e.target===m || e.target.classList.contains('modal-ok')) m.style.display='none';
+    });
+  }
+  $('.modal-title', m).textContent = title;
+  $('.modal-title', m).className = 'modal-title ' + kind;
+  $('.modal-msg', m).textContent = msg;
+  m.style.display = 'flex';
+}
+const pageScroll = {};
+function setPage(page){
+  pageScroll[activePage] = document.scrollingElement.scrollTop;
+  const t = pageTitles[page] || [page, ''];
+  $('#title').textContent = t[0];
+  $('#subtitle').textContent = t[1] || '';
+  $('.actions')?.classList.toggle('page-actions-hidden', page !== 'dashboard');
+  requestAnimationFrame(() => document.scrollingElement.scrollTop = pageScroll[page] || 0);
+}
+function askEvidence(){
+  return new Promise(resolve=>{
+    let m = $('#evidenceModal');
+    if(!m){
+      m = document.createElement('div');
+      m.id = 'evidenceModal';
+      m.className = 'modal-overlay';
+      m.innerHTML = `<div class="modal-box">
+        <h3 class="modal-title">提交验收证据</h3>
+        <p class="modal-msg">请填写交付物路径、链接或完成说明。</p>
+        <input class="modal-input" placeholder="例如 D:\\work\\student_grades.py">
+        <div class="modal-actions"><button data-evidence-cancel>取消</button><button class="primary" data-evidence-ok>提交</button></div>
+      </div>`;
+      document.body.appendChild(m);
+    }
+    const input = $('.modal-input', m);
+    input.value = '';
+    m.style.display = 'flex';
+    input.focus();
+    const done = v => { m.style.display='none'; m.onclick=null; resolve(v); };
+    m.onclick = e => {
+      if(e.target.dataset.evidenceOk!==undefined) done(input.value.trim());
+      if(e.target.dataset.evidenceCancel!==undefined || e.target===m) done('');
+    };
+  });
+}
+function confirmDlg(msg, title='请确认'){
+  return window.confirm(msg);
+}
+function promptDlg(message, initial=''){
+  return new Promise(resolve=>{
+    let m=$('#textPrompt');
+    if(!m){
+      m=document.createElement('div'); m.id='textPrompt'; m.className='modal-overlay';
+      m.innerHTML='<div class="modal-box"><h3 class="modal-title">请输入</h3><p class="modal-msg"></p><input class="modal-input"><div class="modal-actions"><button data-cancel>取消</button><button class="primary" data-ok>确定</button></div></div>';
+      document.body.appendChild(m);
+    }
+    $('.modal-msg',m).textContent=message; const input=$('.modal-input',m); input.value=initial; m.style.display='flex'; input.focus();
+    const done=v=>{m.style.display='none'; m.onclick=null; resolve(v)};
+    m.onclick=e=>{if(e.target.dataset.ok!==undefined) done(input.value.trim()); else if(e.target.dataset.cancel!==undefined||e.target===m) done('')};
+  });
+}
+function showExitScreen(){
+  const div = document.createElement('div');
+  div.className = 'exit-overlay';
+  div.innerHTML = `<div class="exit-box exit-ceremony">
+    <h2>结束今日工作</h2>
+    <p>你还有未完成的任务。你打算怎么处理？</p>
+    <div class="exit-actions">
+      <button id="exitContinue" class="primary">继续 15 分钟</button>
+      <button id="exitDefer">延期到下一个时间块</button>
+      <button id="exitQuit" class="danger">标记中断并退出</button>
+    </div>
+    <textarea id="exitReason" placeholder="可选：填写中断原因..." rows="2" style="width:100%;margin-top:12px;background:var(--card-bg, #161b22);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius);padding:8px;font:inherit;resize:none"></textarea>
+    <small class="hint" style="margin-top:8px;display:block">提示：托盘图标的退出功能已改为打开此页面</small>
+  </div>`;
+  document.body.appendChild(div);
+
+  const exit = async (action) => {
+    const reason = $('#exitReason')?.value?.trim() || '';
+    try {
+      await api('quit', { reason, action });
+    } catch(e) {
+      // quit may trigger server shutdown — ignore fetch errors
+    }
+  };
+
+  $('#exitContinue')?.addEventListener('click', async () => {
+    div.innerHTML = `<div class="exit-box"><div class="exit-spinner"></div><h2>继续工作</h2><p>15 分钟后教练会再次提醒你。</p></div>`;
+    await exit('continue_15');
+    setTimeout(() => { div.remove(); load(); }, 1500);
+  });
+
+  $('#exitDefer')?.addEventListener('click', async () => {
+    div.innerHTML = `<div class="exit-box"><div class="exit-spinner"></div><h2>已延期</h2><p>未完成任务已标记为延期，明天继续。</p></div>`;
+    await exit('defer');
+    setTimeout(() => { div.remove(); load(); }, 1500);
+  });
+
+  $('#exitQuit')?.addEventListener('click', async () => {
+    div.innerHTML = `<div class="exit-box"><div class="exit-spinner"></div><h2>Task Verge 已退出</h2><p>程序正在关闭，可关闭此窗口。</p></div>`;
+    await exit('quit');
+    setTimeout(() => { if(!document.hidden) window.close(); }, 2000);
+  });
+}
+let _toastTimer = null;
+function toast(msg, good=true){
+  $('#statusPill').textContent = msg;
+  $('#statusPill').style.color = good ? 'var(--accent)' : 'var(--bad)';
+  $('#statusPill').classList.remove('toast-pulse'); void $('#statusPill').offsetWidth; $('#statusPill').classList.add('toast-pulse');
+  if(_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(()=>{
+    if((state?.tasks||[]).some(t=>!t.done && t.status==='doing')){
+      $('#statusPill').textContent = '专注中';
+      $('#statusPill').style.color = 'var(--accent)';
+    } else if(state && state.break_active){
+      $('#statusPill').textContent = '休息中';
+      $('#statusPill').style.color = 'var(--warn)';
+    } else {
+      $('#statusPill').textContent = '就绪';
+      $('#statusPill').style.color = 'var(--accent)';
+    }
+  }, 4000);
+}
+function renderOnboarding(){
+  let banner = $('#onboarding');
+  const hasGoal = !!(state.goal && state.goal.trim());
+  const hasTasks = !!(state.tasks && state.tasks.length);
+  if(hasGoal && hasTasks){ if(banner) banner.remove(); return; }
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'onboarding';
+    banner.className = 'onboarding';
+    $('#dashboard').insertBefore(banner, $('#dashboard').firstChild);
+  }
+  const steps = [];
+  if(!hasGoal) steps.push(`<li>第 1 步：去 <b data-goto="settings">设置</b> 页填写你的目标，每行一个</li>`);
+  if(!hasTasks && hasGoal) steps.push(`<li>第 2 步：回到总览点 <b>生成任务</b> 让 AI 为你的目标生成任务</li>`);
+  if(!hasGoal) steps.push(`<li>第 2 步：填好目标后回总览点 <b>生成任务</b></li>`);
+  const recovery = !hasGoal && hasTasks ? '<p class="hint">检测到已有任务，但当前目标为空；请先在设置中补回目标，现有任务不会被删除。</p>' : '';
+  banner.innerHTML = `<div class="onboarding-box">
+    <h3>👋 欢迎使用 Task Verge</h3>
+    <p>这是一个目标专注控制台，先完成下面步骤：</p>
+    <ol>${steps.join('')}</ol>${recovery}
+  </div>`;
+}
+function renderBreakWidget(){
+  const info = $('#breakInfo');
+  if(!info) return;
+  const breaks = state.breaks || [];
+  const todayStr = new Date().toISOString().slice(0,10);
+  const todays = breaks.filter(b => (b.date||'').slice(0,10) === todayStr);
+  const activeTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
+  if(activeTask){
+    $('#statusPill').textContent='专注中';
+    $('#statusPill').style.color='var(--accent)';
+  } else if(state.break_active){
+    const now = Date.now()/1000;
+    const active = breaks.find(b => b.until && b.until > now);
+    if(active){
+      const remain = Math.max(0, Math.ceil((active.until - now)/60));
+      info.textContent = `休息中，剩 ${remain} 分钟（今日 ${todays.length}/3 次）`;
+      info.style.color = 'var(--warn)';
+      return;
+    }
+  }
+  info.textContent = `今日 ${todays.length}/3 次`;
+  info.style.color = 'var(--muted)';
+}
+function render(){
+  localizeShell();
+  updateClock();
+  const doingTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
+  document.body.classList.toggle('focus-active',!!doingTask && activePage==='dashboard');
+  $('#dashboard')?.classList.toggle('focus-first', !!(state.tasks||[]).some(t=>!t.done && t.status!=='skipped'));
+  const hasGoal = !!(state.goal && state.goal !== '[object Object]' && String(state.goal).trim());
+  $('#goal').textContent = state.goal || '尚未设置目标';
+  if($('#goalSelect')) $('#goalSelect').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
+  $('#goalsText').value = (state.goals && state.goals.length ? state.goals : (state.goal ? [state.goal] : [])).join('\n');
+  const gd=state.goal_details||{};
+  if($('#goalOutcome')) $('#goalOutcome').value=gd.outcome||'';
+  if($('#goalDeadline')) $('#goalDeadline').value=gd.deadline||'';
+  if($('#goalBaseline')) $('#goalBaseline').value=gd.baseline||'';
+  if($('#goalCriteria')) $('#goalCriteria').value=(gd.success_criteria||[]).join('\n');
+  if($('#goalConstraints')) $('#goalConstraints').value=(gd.constraints||[]).join('\n');
+  if($('#goalReadiness')){
+    const gr=state.goal_readiness||{};
+    $('#goalReadiness').textContent=gr.ready?'目标定义完整，可以制定计划。':`目标定义 ${gr.score||0}%：${(gr.questions||[]).join(' ')}`;
+    $('#goalReadiness').style.color=gr.ready?'var(--good)':'var(--warn)';
+  }
+  $('#pct').textContent = Math.round(state.completion_pct||0)+'%';
+  const motivation=state.motivation||{};
+  $('#pct').title=`积分 ${motivation.points||0} · 连续完成 ${motivation.streak||0} 次`;
+  if($('#motivationPoints')) $('#motivationPoints').textContent=motivation.points||0;
+  if($('#motivationStreak')) $('#motivationStreak').textContent=motivation.streak||0;
+  if($('#motivationBest')) $('#motivationBest').textContent=motivation.best_streak||0;
+  if($('#motivationHistory')) $('#motivationHistory').innerHTML=(motivation.history||[]).slice(-4).reverse().map(x=>`<div class="ledger-row ${Number(x.points)>=0?'positive':'negative'}"><b>${Number(x.points)>=0?'+':''}${x.points||0}</b><span>${escapeHtml(({accepted:'验收通过',partial:'部分完成',skipped:'跳过任务',failed:'验收失败'}[x.outcome]||x.outcome||'反馈'))}</span></div>`).join('')||'<p class="hint">完成任务后显示反馈记录</p>';
+  if($('#motivationRecovery')) $('#motivationRecovery').hidden=!(state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
+  $('#progressArc').style.strokeDashoffset = 314 - 314*Math.max(0,Math.min(100,state.completion_pct||0))/100;
+  $('#focus').textContent = '前台：'+(state.focus||'--');
+  $('#autostart').checked = !!state.autostart;
+  if($('#workspace')) $('#workspace').value = state.workspace || '';
+  $('#generate').disabled = !hasGoal;
+  $('#generate').hidden = !!(state.tasks||[]).length;
+  if($('#genAvailableMinutes')) $('#genAvailableMinutes').value = state.task_gen?.available_minutes || 120;
+  if($('#genTaskCount')) $('#genTaskCount').value = state.task_gen?.task_count || 3;
+  if($('#genMaxTaskMinutes')) $('#genMaxTaskMinutes').value = state.task_gen?.max_task_minutes || 45;
+  if($('#desiredRetention')) $('#desiredRetention').value = state.user_model?.desired_retention || 0.9;
+  if($('#genPreferContinuation')) $('#genPreferContinuation').checked = state.task_gen?.prefer_continuation !== false;
+  if($('#genForceOutput')) $('#genForceOutput').checked = state.task_gen?.force_measurable_output !== false;
+  if($('#focusTemplate')) $('#focusTemplate').value = (state.schedule && state.schedule.focus_template) || '90';
+  // Privacy toggles
+  const priv = state.privacy || {cloud_ai_enabled:true,upload_raw_file_enabled:true,fine_grained_fg_enabled:true,diagnostic_log_verbose:false};
+  if($('#privacyCloudAI')) $('#privacyCloudAI').checked = priv.cloud_ai_enabled !== false;
+  if($('#privacyUpload')) $('#privacyUpload').checked = priv.upload_raw_file_enabled !== false;
+  if($('#privacyFG')) $('#privacyFG').checked = priv.fine_grained_fg_enabled !== false;
+  if($('#privacyShareFG')) $('#privacyShareFG').checked = priv.share_foreground_with_ai === true;
+  if($('#privacyLogVerbose')) $('#privacyLogVerbose').checked = priv.diagnostic_log_verbose === true;
+  const guard = state.focus_guard || {};
+  const guardStats = guard.stats || {};
+  if($('#focusGuardEnabled')) $('#focusGuardEnabled').checked = guard.enabled !== false;
+  if($('#focusStats')) $('#focusStats').textContent = `本次记录：分心 ${guardStats.distractions||0} 次 · ${formatDuration(guardStats.distraction_seconds||0)} · 关闭窗口 ${guardStats.closed_windows||0} 次 · 临时放行 ${guardStats.temporary_allows||0} 次`;
+  if($('#toggleLock')) $('#toggleLock').textContent = state.plan_locked ? '\u5df2\u9501\u5b9a' : '\u9501\u5b9a\u8ba1\u5212';
+  if($('#dashboardToggleLock')) {
+    $('#dashboardToggleLock').textContent = state.plan_locked ? '\u5df2\u9501\u5b9a' : '\u9501\u5b9a\u8ba1\u5212';
+    $('#dashboardToggleLock').disabled = !(state.tasks || []).length;
+    $('#dashboardToggleLock').title = (state.tasks || []).length ? '锁定今日任务计划' : '生成任务后可锁定计划';
+  }
+  if($('#regenerateTasks')) {
+    $('#regenerateTasks').hidden = !(state.tasks || []).length;
+  }
+  const dsStatus = $('#deepseekStatus');
+  if(dsStatus){
+    dsStatus.textContent = state.deepseek_configured ? '✓ 已配置' : '✗ 未配置（生成任务将用本地模板）';
+    dsStatus.style.color = state.deepseek_configured ? 'var(--good)' : 'var(--warn)';
+  }
+  if(doingTask){
+    $('#statusPill').textContent = '专注中';
+    $('#statusPill').style.color = 'var(--accent)';
+  } else if(state.break_active){
+    $('#statusPill').textContent = '休息中';
+    $('#statusPill').style.color = 'var(--warn)';
+  } else {
+    $('#statusPill').textContent = '就绪';
+    $('#statusPill').style.color = 'var(--accent)';
+  }
+  renderBreakWidget();
+  renderOnboarding();
+  renderPrimaryAction();
+  renderCurrentTaskBar();
+  syncFocusStatusPill();
+  renderSessionControls();
+  renderRecoveryAction();
+  if($('#tasksText')) $('#tasksText').value = state.tasks.map(t=>t.text || t.title || '').join('\n');
+  renderReview();
+  renderGoalUnderstanding();
+  // Skip taskList rebuild if a file picker was opened within the last 5s
+  // (refreshFg runs every 2s and would destroy the file input mid-pick)
+  const _hasFileSelected = $$('#taskList [data-evidence-file]').some(inp => inp.files && inp.files.length);
+  const _skipTaskList = _hasFileSelected || Date.now() - _lastFilePickTs < 5000;
+  if(!_skipTaskList){
+    $('#taskList').innerHTML = state.tasks.map(taskCard).join('') || '<p class="hint">还没有任务。</p>';
+  }
+  addTaskAdjustControls();
+  renderCrashNotice();
+  renderUndoAction();
+  renderDailyWrap();
+}
+
+function localizeShell(){
+  const labels = {
+    '.brand small':'专注执行系统',
+    '.nav-item[data-page="dashboard"] span':'今日执行',
+    '.nav-item[data-page="review"] span':'复盘',
+    '.nav-item[data-page="settings"] span':'设置',
+    '#title':'今日执行',
+    '#subtitle':'聚焦一个可验收结果，完成后立即获得反馈。',
+    '#generate':'生成任务',
+    '.dash-tasks .panel-head h3':'任务队列',
+    '#addTask':'新增',
+    '.motivation-panel .panel-head h3':'执行反馈',
+    '.motivation-score small':'当前积分',
+    '.streak-grid > div:first-child small':'连续完成',
+    '.streak-grid > div:last-child small':'最佳连续',
+    '.recovery-box small':'补救行动',
+    '.recovery-box p':'验收未通过时，从一个最小可验证步骤重新开始。',
+    '.recovery-box button':'开始补救'
+  };
+  Object.entries(labels).forEach(([selector,value])=>{
+    const el=$(selector);
+    if(el) el.textContent=value;
+  });
+}
+
+function renderCurrentTaskBar(){
+  let bar=$('#currentTaskBar');
+  const task=(state.tasks||[]).find(t=>!t.done && t.status==='doing') || (state.tasks||[]).find(t=>!t.done && t.status!=='skipped');
+  if(!task){ if(bar) bar.remove(); return; }
+  if(!bar){ bar=document.createElement('div'); bar.id='currentTaskBar'; bar.className='current-task-bar'; $('#dashboard').prepend(bar); }
+  const idx=(state.tasks||[]).indexOf(task);
+  const title=task.text||task.title||'未命名任务';
+  const next=task.next_action||'从最小可执行步骤开始';
+  const done=task.done_definition||task.expected_output||task.acceptance||'产出可检查的结果';
+  const ancestry=[state.goal,task.milestone||'今日执行',title].filter(Boolean);
+  const started=task.started_at ? new Date(task.started_at).getTime() : 0;
+  const elapsed=Math.max(0,Number(task.actual_minutes)||0)+(started&&task.status==='doing'?Math.max(0,Math.floor((Date.now()-started)/60000)):0);
+  const goals=(state.goals||[]).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('')||'<option value="0">尚未设置目标</option>';
+  const selector=task.status==='doing'?'':`<select id="goalSelect" class="focus-goal-select">${goals}</select>`;
+  const action=task.status==='doing'?'':`<button class="primary" data-start-task="${idx}">立即开始</button>`;
+  if(task.status==='doing'){
+    const skills=state.user_model?.skills||{}, skill=skills[task.skill_id]||{};
+    const acceptance=task.acceptance_result||{};
+    const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
+    const nextTask=(state.tasks||[]).slice(idx+1).find(t=>!t.done&&t.status!=='skipped');
+    const doneCount=(state.tasks||[]).filter(t=>t.done).length, total=Math.max(1,(state.tasks||[]).length);
+    bar.className='current-task-bar focus-workspace';
+    bar.innerHTML=`<div class="focus-canvas">
+      <header class="focus-heading"><h2>专注执行</h2><small>当前任务</small><b>${escapeHtml(title)}</b></header>
+      <div class="focus-timer"><small>已用时间</small><strong id="focusElapsed" data-started="${escapeHtml(task.started_at||'')}" data-actual="${Number(task.actual_minutes)||0}">${formatFocusElapsed(task)}</strong></div>
+      <div class="focus-details">
+        <span>下一步要做</span><b>${escapeHtml(next)}</b>
+        <span>验收条件</span><b>${escapeHtml(done)}</b>
+        ${task.skill_id?`<span>知识点</span><b><code>${escapeHtml(task.skill_id)}</code></b>
+        <span>掌握度</span><b class="focus-mastery"><i style="width:${Math.round((skill.mastery||0)*100)}%"></i><em>${Math.round((skill.mastery||0)*100)}%</em></b>`:''}
+      </div>
+      ${task.skill_id?`<div class="focus-rating"><span>回忆质量</span><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
+      ${acceptance.reason?`<div class="focus-acceptance"><b>${acceptance.decision==='accepted'?'验收通过':'需要补交'}</b><span>${escapeHtml(acceptance.reason)}</span>${(acceptance.missing||[]).length?`<small>缺少：${escapeHtml(acceptance.missing.join('；'))}</small>`:''}${(acceptance.next_steps||[]).length?`<small>下一步：${escapeHtml(acceptance.next_steps[0])}</small>`:''}${evidenceCount&&!task.done?`<button class="primary" data-ai-evaluate="${idx}">重新验收</button>`:''}</div>`:''}
+      <label class="focus-evidence"><input data-evidence-file="${idx}" type="file" multiple><b>上传学习证据</b><span>${evidenceCount?`已上传 ${evidenceCount} 项，可继续添加`:'支持图片、PDF、代码与文档'}</span></label>
+      <footer class="focus-actionbar"><button data-session-action="pause" data-session-idx="${idx}">暂停</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">提交验收</button></footer>
+    </div>
+    <aside class="focus-rail">
+      <section><h3>下一任务</h3><p>${escapeHtml(nextTask?.title||nextTask?.text||'完成当前任务后生成')}</p></section>
+      <section><h3>今日进度</h3><b>${doneCount}/${total} <small>项任务已完成</small></b><div class="focus-progress"><i style="width:${Math.round(doneCount*100/total)}%"></i></div></section>
+    </aside>`;
+    return;
+  }
+  bar.className='current-task-bar';
+  bar.innerHTML=`<div class="focus-first-copy">${selector}<nav class="goal-ancestry" aria-label="目标路径">${ancestry.map(escapeHtml).join('<i>→</i>')}</nav><small>${task.status==='doing'?`已投入 ${elapsed} 分钟`:'当前任务'}</small><b>${escapeHtml(title)}</b><span>下一步：${escapeHtml(next)}</span><em>验收标准：${escapeHtml(done)}</em></div>${action}`;
+}
+
+function renderSessionControls(){
+  const bar=$('#currentTaskBar'), task=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
+  if(!bar||!task) return;
+  if(bar.classList.contains('focus-workspace')) return;
+  const idx=(state.tasks||[]).indexOf(task);
+  const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
+  let box=bar.querySelector('.focus-first-actions');
+  if(!box){ box=document.createElement('div'); box.className='focus-first-actions'; bar.appendChild(box); }
+  box.innerHTML=`<label class="upload-file-button focus-upload">${evidenceCount?`继续上传 · ${evidenceCount} 项`:'上传交付物'}<input data-evidence-file="${idx}" type="file" multiple></label><button data-session-action="pause" data-session-idx="${idx}">暂停任务</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">提交验收</button>`;
+}
+function renderFocusProfile(){
+  let box=$('#focusProfile'); if(!box){ box=document.createElement('div'); box.id='focusProfile'; box.className='panel focus-profile'; $('.dash-side')?.appendChild(box); }
+  const p=state.focus_profile||{}; const apps=Object.entries(p.top_apps||{}).map(([k,v])=>`${escapeHtml(k)} ${formatDuration(v)}`).join(' · ');
+  box.innerHTML=`<div class="panel-head"><h3>专注画像</h3><span class="hint">本地统计</span></div><p>历史平均完成 ${p.avg_completion||0}% · 已归档 ${p.archive_days||0} 天</p><p>累计分心 ${p.distractions||0} 次${apps?` · 常用：${apps}`:''}</p>${p.recommendation?`<p class="hint">建议：${escapeHtml(p.recommendation)}</p>`:''}`;
+}
+function renderPrimaryAction(){
+  const actions=$('.actions'); if(!actions) return;
+  let b=$('#primaryAction');
+  if(!b){ b=document.createElement('button'); b.id='primaryAction'; b.className='primary'; actions.insertBefore(b, $('#evaluate')); }
+  const pending=(state.tasks||[]).some(t=>!t.done && t.status!=='skipped');
+  if(!state.goal?.trim()){ b.textContent='设置目标'; b.dataset.primaryAction='settings'; }
+  else if(!state.tasks?.length){ b.remove(); return; }
+  else if(pending){ b.textContent='继续当前任务'; b.dataset.primaryAction='tasks'; }
+  else { b.textContent='保存今日复盘'; b.dataset.primaryAction='archive'; }
+}
+function legacyRenderCurrentTaskBar(){
+  let bar=$('#currentTaskBar');
+  const task=(state.tasks||[]).find(t=>!t.done && t.status==='doing') || (state.tasks||[]).find(t=>!t.done && t.status!=='skipped');
+  if(!task){ if(bar) bar.remove(); return; }
+  if(!bar){ bar=document.createElement('div'); bar.id='currentTaskBar'; bar.className='current-task-bar'; $('#dashboard').prepend(bar); }
+  const idx=(state.tasks||[]).indexOf(task);
+  const title = task.text || task.title || '未命名任务';
+  const next = task.next_action || '从这里开始';
+  const done = task.done_definition || task.expected_output || task.acceptance || '完成这一步并留下可继续的位置';
+  const goals=(state.goals||[]).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
+  const started=task.started_at ? new Date(task.started_at).getTime() : 0;
+  const elapsed=Math.max(0,Number(task.actual_minutes)||0)+(started&&task.status==='doing'?Math.max(0,Math.floor((Date.now()-started)/60000)):0);
+  const selector=task.status==='doing'?'':`<select id="goalSelect" class="focus-goal-select">${goals}</select>`;
+  const action=task.status==='doing'?'':`<button class="primary" data-start-task="${idx}">立即开始</button>`;
+  bar.innerHTML=`<div class="focus-first-copy">${selector}<small>${task.status==='doing'?`已投入 ${elapsed} 分钟`:'今天的主线任务'}</small><b>${escapeHtml(title)}</b><span>下一步：${escapeHtml(next)}</span><em>完成标准：${escapeHtml(done)}</em></div>${action}`;
+}
+function syncFocusStatusPill(){
+  if(!focusStatusPill) focusStatusPill=$('#statusPill');
+  if(!focusStatusPill) return;
+  const target=$('.hero-copy');
+  if(target && focusStatusPill.parentElement!==target) target.prepend(focusStatusPill);
+}
+function legacyRenderSessionControls(){
+  const bar=$('#currentTaskBar'), task=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
+  if(!bar || !task || task.status!=='doing') return;
+  let box=bar.querySelector('.focus-first-actions');
+  if(!box){ box=document.createElement('div'); box.className='focus-first-actions'; bar.appendChild(box); }
+  if(box.querySelector('[data-session-action]')) return;
+  const idx=(state.tasks||[]).indexOf(task);
+  const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
+  box.insertAdjacentHTML('beforeend', `<label class="upload-file-button focus-upload">${evidenceCount?`继续上传 · ${evidenceCount} 项`:'上传交付物'}<input data-evidence-file="${idx}" type="file" multiple></label><button data-session-action="pause" data-session-idx="${idx}">暂停任务</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">完成任务</button>`);
+}
+function renderRecoveryAction(){
+  let box=$('#recoveryAction');
+  const task=(state.tasks||[]).find(t=>!t.done && ['paused','partial'].includes(t.status));
+  if(!task){ if(box) box.remove(); return; }
+  if(!box){ box=document.createElement('div'); box.id='recoveryAction'; box.className='recovery-card'; $('#dashboard').appendChild(box); }
+  box.innerHTML=`<div><small>今天状态不理想也没关系</small><b>先完成一个 10 分钟保底动作</b><span>${escapeHtml(task.continuation_note||task.next_action||'从当前任务留下的续接点继续')}</span></div><button class="primary" data-recovery>开始恢复</button>`;
+}
+function renderDailyWrap(){
+  let box=$('#dailyWrap');
+  const tasks=state.tasks||[], done=tasks.length>0 && tasks.every(t=>t.done);
+  const today=new Date().toISOString().slice(0,10);
+  const archived=(state.archives||[]).some(a=>String(a.date||'').slice(0,10)===today);
+  if(!done || archived){ if(box) box.remove(); return; }
+  if(!box){
+    box=document.createElement('div'); box.id='dailyWrap'; box.className='onboarding';
+    $('#dashboard').insertBefore(box,$('#dashboard').firstChild);
+  }
+  box.innerHTML='<div class="onboarding-box"><h3>\u4eca\u65e5\u4efb\u52a1\u5df2\u5b8c\u6210</h3><p>\u4fdd\u5b58\u4eca\u65e5\u590d\u76d8\uff0c\u660e\u5929\u53ef\u4ee5\u4ece\u672a\u5b8c\u6210\u4efb\u52a1\u7ee7\u7eed\u3002</p><button data-archive-today>\u4fdd\u5b58\u4eca\u65e5\u590d\u76d8</button><button data-goto="review">\u67e5\u770b\u590d\u76d8</button></div>';
+}
+function addTaskAdjustControls(){
+  $$('#taskList .task').forEach((el,i)=>{
+    if(state.tasks[i]?.done || el.querySelector('.task-actions')) return;
+    const box=document.createElement('div'); box.className='task-actions';
+    box.innerHTML='<button data-task-action="extend">\u5ef6\u957f 15 \u5206\u949f</button><button data-task-action="skip">\u4eca\u5929\u8df3\u8fc7</button>';
+    el.querySelector('.task-body')?.appendChild(box);
+  });
+}
+function renderUndoAction(){
+  let box=$('#undoAction');
+  if(!state.undo_available){ if(box) box.remove(); return; }
+  if(!box){
+    box=document.createElement('button'); box.id='undoAction'; box.className='hint'; box.textContent='\u64a4\u9500\u4e0a\u4e00\u6b21\u64cd\u4f5c';
+    $('.actions')?.appendChild(box);
+  }
+}
+function ensureCoachWorkspace(){
+  let box = $('#coachWorkspace');
+  if(box) return box;
+  box = document.createElement('div');
+  box.id = 'coachWorkspace';
+  box.className = 'coach-workspace';
+  box.innerHTML = `<div class="panel"><div class="panel-head"><h3>今日时间块</h3><button id="regenPlan">生成时间块</button></div><div id="timeBlocks" class="time-blocks"></div></div>
+    <div class="panel"><div class="panel-head"><h3>AI 教练</h3><button id="coachQuietToday">今天别再提醒</button></div><div id="coachMessages" class="coach-messages"></div><div id="coachAction" class="coach-action"></div><div class="coach-input"><input id="coachInput" placeholder="和教练对话，例如：把任务挪到下午"><button id="coachSend">发送</button></div></div>
+    <div class="panel full"><div class="panel-head"><h3>洞察卡</h3><span class="hint" style="margin:0">AI 根据专注数据自动生成</span></div><div id="insightCards" class="insight-cards"></div></div>`;
+  const dashSection = document.getElementById('dashboard');
+  dashSection.appendChild(box);
+  return box;
+}
+function renderCoachWorkspace(){
+  ensureCoachWorkspace();
+  renderTimeBlocks();
+  renderInsights();
+  renderCoachMessages();
+}
+function renderTimeBlocks(){
+  const box=$('#timeBlocks');
+  const blocks=state.time_blocks||[];
+  box.innerHTML = blocks.map(b=>`<div class="time-block ${b.type==='break'?'break':'task'}">
+    <b>${escapeHtml(b.start||'')} - ${escapeHtml(b.end||'')}</b>
+    <span>${escapeHtml(b.type==='break' ? '休息' : (b.title||'任务'))}</span>
+    ${b.reason ? `<small>${escapeHtml(b.reason)}</small>` : ''}
+  </div>`).join('') || '<p class="hint">还没有时间块，点击“生成时间块”。</p>';
+}
+function renderInsights(){
+  const box=$('#insightCards');
+  const alerts=state.insights?.alerts || [];
+  box.innerHTML = alerts.map(a=>{
+    const icons = {
+      good: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M7 10l2 2 4-4"/></svg>',
+      warn: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L18 17H2L10 3z"/><path d="M10 8v3"/><circle cx="10" cy="14" r="0.5" fill="currentColor"/></svg>',
+      error: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M7.5 7.5l5 5M12.5 7.5l-5 5"/></svg>',
+      info: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.5" fill="currentColor"/></svg>'
+    };
+    const icon = icons[a.level] || icons.info;
+    return `<div class="insight ${a.level||'info'}">
+    <div class="insight-icon">${icon}</div>
+    <div class="insight-body"><b>${escapeHtml(a.title||'洞察')}</b><p>${escapeHtml(a.message||'')}</p>
+    ${a.action ? `<button data-insight-chat="${escapeHtml(a.message||a.title||'')}">${escapeHtml(a.action)}</button>` : ''}
+    <button data-insight-ignore="${escapeHtml(a.id||'')}" class="hint" style="font-size:11px;margin-left:4px">忽略此项</button></div>
+  </div>`}).join('') || '<div class="insight-empty"><div class="insight-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/></svg></div><p>AI 会根据你的专注数据自动生成洞察</p><small>完成任务后，这里会出现个性化建议</small></div>';
+}
+function renderCoachMessages(){
+  const box=$('#coachMessages');
+  const messages=[...new Map((state.coach_messages||[]).map(m=>[`${m.role}|${m.text||''}`,m])).values()].slice(-8);
+  state.coach_messages=messages;
+  box.innerHTML=messages.map(m=>`<div class="coach-msg ${m.role==='user'?'user':'assistant'}"><b>${m.role==='user'?'我':'教练'}</b><p>${escapeHtml(m.text||'')}</p></div>`).join('') || '<p class="hint">教练会在这里解释计划、提出调整建议。</p>';
+}
+function renderCoachAction(action, reply=''){
+  const box=$('#coachAction');
+  if(!box || !action){ if(box) box.innerHTML=''; return; }
+  box.dataset.action=JSON.stringify(action);
+  box.innerHTML=`<div class="action-preview"><b>将执行</b><p>${escapeHtml(reply || action.type || '')}</p><button id="confirmCoachAction">确认</button><button id="cancelCoachAction">取消</button></div>`;
+}
+function renderGoalUnderstanding(){
+  const list = $('#taskList');
+  if(!list) return;
+  let box = $('#goalUnderstanding');
+  const tg = state.task_generation || {};
+  const ga = tg.goal_analysis || {};
+  const pd = tg.progress_diagnosis || {};
+  const milestones = (tg.milestones||[]).map(x=>x.name||'').filter(Boolean).slice(0,4).join(' → ');
+  if(!tg.ts){ if(box) box.remove(); return; }
+  if(!box){
+    box = document.createElement('div');
+    box.id = 'goalUnderstanding';
+    box.className = 'ai-brief';
+    list.parentElement.insertBefore(box, list);
+  }
+  const success = (ga.success_criteria||[]).slice(0,3).join('；');
+  const avoid = (pd.avoid||[]).slice(0,2).join('；');
+  box.innerHTML = `<b>AI 目标理解</b><p>${escapeHtml(ga.intent || state.goal || '')}</p>
+    ${success ? `<small>成功标准：${escapeHtml(success)}</small>` : ''}
+    ${avoid ? `<small>避免：${escapeHtml(avoid)}</small>` : ''}
+    ${tg.daily_strategy ? `<small>今日策略：${escapeHtml(tg.daily_strategy)}</small>` : ''}`;
+  if(milestones) box.insertAdjacentHTML('beforeend', `<small>阶段：${escapeHtml(milestones)}</small>`);
+}
+function renderCrashNotice(){
+  const box = $('#crashNotice');
+  if(!box) return;
+  const info = state.last_crash;
+  if(!info){ box.style.display='none'; return; }
+  if(String(info.reason||'').toLowerCase()==='running') info.reason='上次未正常关闭';
+  box.style.display='block';
+  box.innerHTML = `<b>⚠ 上次异常退出</b>时间：${escapeHtml(info.ts||'未知')}。原因：${escapeHtml(info.reason||'未知')}。建议检查任务数据是否完整。 <button id="dismissCrash" style="margin-left:8px;padding:4px 10px">忽略</button>`;
+}
+function renderReview(){
+  if(!$('#quitList')) return;
+  const summary=$('#reviewSummary');
+  if(summary){
+    const tasks=state.tasks||[], done=tasks.filter(t=>t.done).length, pending=tasks.find(t=>!t.done);
+    const top=Object.entries(state.fg||{}).filter(([k])=>k!=='n/a').sort((a,b)=>b[1]-a[1])[0];
+    const archives=state.archives||[], avg=archives.length ? Math.round(archives.reduce((n,a)=>n+Number(a.completion_pct||0),0)/archives.length) : 0, history=archives.length ? `历史 ${archives.length} 天平均完成 ${avg}%` : '暂无历史归档';
+    summary.innerHTML=`<div class="panel-head"><h3>今日复盘摘要</h3><span>${done}/${tasks.length} 已完成</span></div>
+      <p>${pending ? `下一步：${escapeHtml(pending.text||pending.title||'未命名任务')}` : '今日任务已全部完成，可以归档。'}</p>
+      <small>${top ? `累计使用最多：${escapeHtml(top[0])} · ${formatDuration(top[1])}` : '暂无前台时间数据'} · ${history}${archives.some(a=>a.date===new Date().toISOString().slice(0,10)) ? ' · 今日已归档' : ''}</small>
+      ${state.last_review?.ts ? `<p class="review-next-step">模型判断：容量系数 ${state.last_review.capacity_factor} · 合适任务时长 ${state.last_review.preferred_task_minutes} 分钟${state.last_review.common_friction?` · 常见阻力 ${escapeHtml(state.last_review.common_friction)}`:''}</p>` : ''}
+      <button class="primary" id="startNextCycle">复盘并生成下一轮任务</button>`;
+  }
+  if(summary){
+    const weekMap = new Map();
+    for(const row of (state.history||[]).filter(x=>x && x.date).slice(-60)) weekMap.set(String(row.date).slice(0,10), row);
+    const weekRows = [...weekMap.values()].slice(-7);
+    if(weekRows.length){
+      const total = weekRows.reduce((n,row)=>n+(row.tasks||[]).length,0);
+      const done = weekRows.reduce((n,row)=>{
+        const flags = Array.isArray(row.done_flags) && row.done_flags.length
+          ? row.done_flags
+          : (row.tasks||[]).map(task=>task && (task.done || task.status === 'done'));
+        return n + flags.filter(Boolean).length;
+      },0);
+      const avg = Math.round(weekRows.reduce((n,row)=>n+Number(row.completion_pct||0),0)/weekRows.length);
+      summary.insertAdjacentHTML('beforeend', `<small class="review-weekly">近 7 天：${weekRows.length} 天有记录 · 平均完成率 ${avg}% · 完成 ${done}/${total} 个任务</small>`);
+    }
+    const fs=state.focus_guard?.stats;
+    if(fs) summary.insertAdjacentHTML('beforeend', `<small class="review-weekly">专注干预：分心 ${fs.distractions||0} 次 · ${formatDuration(fs.distraction_seconds||0)} · 关闭窗口 ${fs.closed_windows||0} 次</small>`);
+  }
+  const leadInsight = state.insights?.alerts?.[0];
+  if(summary && leadInsight){
+    summary.insertAdjacentHTML('beforeend', `<p class="review-next-step"><b>下一步建议：</b>${escapeHtml(leadInsight.message || leadInsight.title || '')}</p>`);
+  }
+  const eventMessage = x => ({
+    plan_locked:'已生成并锁定今日任务', plan_lock:'已锁定计划', plan_unlock:'已解锁计划',
+    ai_apps:'已完成任务应用匹配', ai_apps_failed:'应用匹配失败，请稍后重试', ai_apps_skipped:'未配置 AI，已保留已有应用',
+    app_catalog:'已完成应用分类', fallback_gen:'AI 不可用，已使用本地任务模板',
+    task_evidence:'已更新任务交付物', archive:'已归档今日记录', archive_delete:'已删除一条归档',
+    coach_plan:'已重新生成时间块'
+  }[x.kind] || x.message || x.reason || '已完成操作');
+  const fmt = (label, x) => `<div class="log-item"><b>${escapeHtml(label)}</b><span>${escapeHtml(x.ts||x.date||'')}</span><p>${escapeHtml(eventMessage(x))}</p></div>`;
+  $('#quitList').innerHTML=(state.quit_attempts||[]).slice().reverse().map(x=>fmt('退出申请', x)).join('') || '<p class="hint">暂无退出记录。</p>';
+  $('#eventList').innerHTML=(state.events||[]).slice().reverse().map(x=>fmt(eventName(x.kind), x)).join('') || '<p class="hint">暂无事件。</p>';
+  $('#archiveList').innerHTML=(state.archives||[]).slice().reverse().map(a=>`<div class="log-item"><div><b>${escapeHtml(a.date)}</b><button data-remove-archive="${escapeHtml(a.date)}" title="删除这条归档">删除</button></div><p>${escapeHtml(a.goal||'')} · 完成 ${doneCount(a)}/${(a.tasks||[]).length} · ${a.completion_pct||0}%</p></div>`).join('') || '<p class="hint">暂无归档。</p>';
+}
+const _renderReview = renderReview;
+renderReview = function(){
+  _renderReview();
+  const graph=state.knowledge_graph||{}, summary=$('#reviewSummary');
+  if(summary && (graph.nodes||[]).length){
+    const edges=graph.edges||[];
+    summary.insertAdjacentHTML('beforeend', `<div id="knowledgeGraph" class="knowledge-graph">
+      <div class="panel-head"><h3>知识图谱</h3><span>${graph.nodes.length} 个知识点 · ${edges.length} 条前置关系</span></div>
+      <div class="knowledge-nodes">${graph.nodes.map(node=>{
+        const parents=edges.filter(edge=>edge.to===node.id).map(edge=>edge.from);
+        const active=graph.focus?.skill_id===node.id?' active':'';
+        return `<div class="knowledge-node ${node.ready?'ready':'blocked'}${active}">
+          <b>${escapeHtml(node.title||node.id)}</b><span>${Math.round((node.mastery||0)*100)}%</span>
+          ${node.title&&node.title!==node.id?`<small>${escapeHtml(node.id)}</small>`:''}
+          <small>${escapeHtml(node.state||'New')}${parents.length?` · 前置：${escapeHtml(parents.join('、'))}`:' · 起点'}</small>
+        </div>`;
+      }).join('')}</div>
+    </div>`);
+  }
+  $$('#archiveList .log-item').forEach((el, i) => {
+    el.dataset.archive = String((state.archives || []).length - 1 - i);
+    el.title = '点击查看当天详情';
+  });
+};
+function doneCount(a){ return (a.done_flags||[]).filter(Boolean).length; }
+function eventName(k){
+  return ({plan_lock:'锁定计划',plan_unlock:'解锁计划',task_edit:'修改任务',break:'休息申请',quit:'退出申请',quit_blocked:'退出被拦截',archive:'每日归档',archive_delete:'删除归档',fallback_gen:'本地生成任务',plan_locked:'生成并锁定任务',ai_apps:'AI 识别应用',ai_apps_skipped:'跳过应用匹配',ai_apps_failed:'AI 识别失败',app_catalog:'AI 应用分类',app_catalog_failed:'AI 分类失败',request_app:'应用申请',coach_plan:'生成时间块',focus_distraction:'检测到分心',focus_distraction_seconds:'记录分心时长',focus_closed_windows:'关闭分心窗口',focus_temporary_allows:'临时放行应用',focus_permanent_allows:'永久允许应用',focus_paused:'暂停专注',focus_policy:'更新专注策略'}[k] || k);
+}
+function taskCard(t,i){
+  const skill=(state.user_model?.skills||{})[t.skill_id]||{};
+  const learningLabel=({diagnostic:'诊断',recall:'闭卷回忆',practice:'练习',explain:'费曼解释',transfer:'迁移应用',review:'到期复习'}[t.learning_task_type]||t.learning_task_type||'');
+  const learningMeta=t.skill_id ? `<div class="learning-meta"><b>${escapeHtml(t.skill_id)}</b>${learningLabel?`<span>${escapeHtml(learningLabel)}</span>`:''}<span>掌握度 ${Math.round((skill.mastery||0)*100)}%</span></div>` : '';
+  if(t.status==='skipped') return `<div class="task task-compact deferred"><div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">今日已跳过，可稍后编辑</div></div><button data-edit="${i}">编辑</button></div>`;
+  if(t.done) { const ar=t.acceptance_result||{}, ev=(t.evidence||[]).length; return `<div class="task task-compact done">
+    <input type="checkbox" checked disabled aria-label="任务已完成">
+    <div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">已完成${ev?` · ${ev} 项交付物`:''}${ar.reason?` · ${escapeHtml(ar.reason)}`:''}</div></div>
+    <button data-edit="${i}">编辑</button>
+  </div>`; }
+  const requiredApps = [...new Set(t.required_apps||[])].slice(0,4);
+  const optionalApps = [...new Set((t.allowed_apps||[]).filter(x => !requiredApps.some(r => String(r).toLowerCase() === String(x).toLowerCase())))].slice(0,4);
+  const meta = [typeName(t.type), t.estimated_minutes ? `${t.estimated_minutes} 分钟` : '', t.difficulty ? `难度 ${t.difficulty}` : ''].filter(Boolean).join(' · ');
+  const stateLabel=({doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延',skipped:'已跳过'}[t.status]||'待开始');
+  const agentRun=(state.agent_runs||[]).slice().reverse().find(r=>r.task_id===(t.id||t.title));
+  const agentUi=agentRun ? `<div class="agent-run"><b>Agent：${escapeHtml(agentRun.status)}</b><span>步骤 ${agentRun.step}/${agentRun.max_steps}</span>${agentRun.status==='awaiting_confirmation'?`<button data-agent="confirm" data-run-id="${escapeHtml(agentRun.run_id)}">确认继续</button>`:''}${['paused','failed','blocked'].includes(agentRun.status)?`<button data-agent="resume" data-run-id="${escapeHtml(agentRun.run_id)}">继续</button>`:''}${!['completed','failed','blocked','paused','awaiting_confirmation'].includes(agentRun.status)?`<button data-agent="stop" data-run-id="${escapeHtml(agentRun.run_id)}">暂停</button>`:''}</div>` : '';
+  const ar = t.acceptance_result || {};
+  const decisionLabel={accepted:'通过',conditional:'有条件通过',review:'待人工复核',rejected:'驳回'}[ar.decision]||'';
+  const ancestry=[state.goal,t.milestone||'今日执行',t.text||t.title].filter(Boolean);
+  // evidence is now a list; join names for display
+  const evList = Array.isArray(t.evidence) ? t.evidence.filter(Boolean) : (t.evidence ? [t.evidence] : []);
+  const evidenceNames = evList.length ? evList.map(e => String(e).split(/[\\/]/).pop()).join(', ') : '尚未上传交付物';
+  const evidenceTitle = evList.length ? evList.map(String).join('\n') : '';
+  return `<div class="task ${t.done?'done':''}">
+    <input type="checkbox" ${t.done?'checked':''} data-ai-evaluate="${i}" aria-label="验收任务 ${escapeHtml(t.text || t.title || '')}" title="提交证据后由 AI 验收">
+    <div class="task-body">
+      <div class="task-title">${escapeHtml(t.text || t.title || '')}</div>
+      <div class="goal-ancestry">${ancestry.map(escapeHtml).join('<i>→</i>')}</div>
+      <div class="task-meta"><b>${stateLabel}</b> · ${escapeHtml(meta)}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
+      ${learningMeta}
+      ${t.skill_id ? `<div class="recall-rating" aria-label="回忆质量">
+        <small>回忆质量：</small>
+        ${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${t.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${i}">${label}</button>`).join('')}
+      </div>` : ''}
+      ${agentUi}
+      ${t.depends_on?.length ? `<div class="task-field"><b>前置</b><span>${escapeHtml(t.depends_on.join('、'))}</span></div>` : ''}
+      ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ''}
+      ${t.expected_output ? `<div class="task-field"><b>交付物</b><span>${escapeHtml(t.expected_output)}</span></div>` : ''}
+      ${t.acceptance ? `<div class="task-field"><b>验收</b><span>${escapeHtml(t.acceptance)}</span></div>` : ''}
+      ${t.adjustment_reason ? `<div class="task-field"><b>调整依据</b><span>${escapeHtml(t.adjustment_reason)}</span></div>` : ''}
+      ${!t.done ? `<div class="task-actions" aria-label="反馈当前任务">
+        <small>反馈：</small>
+        <button data-feedback="too_hard" data-feedback-idx="${i}">太难</button>
+        <button data-feedback="stuck" data-feedback-idx="${i}">卡住 / 救援</button>
+        <button data-feedback="no_time" data-feedback-idx="${i}">没时间</button>
+        <button data-feedback="wrong_direction" data-feedback-idx="${i}">方向不对</button>
+        <button data-feedback="too_easy" data-feedback-idx="${i}">太简单</button>
+      </div>` : ''}
+      <div class="evidence-row">
+        <div class="evidence-display ${evList.length?'has-file':''}" title="${escapeHtml(evidenceTitle)}">${escapeHtml(evidenceNames)}</div>
+        <label class="upload-file-button">${evList.length?'继续上传':'上传交付物'}<input data-evidence-file="${i}" type="file" multiple></label>
+      </div>
+      ${evList.length ? `<div class="evidence-files">${evList.map((e,j)=>`<span class="evidence-tag" title="${escapeHtml(e)}">${escapeHtml(String(e).split(/[\\/]/).pop())}<button data-remove-evidence="${i}" data-ev-idx="${j}" aria-label="删除交付物">×</button></span>`).join('')}</div>` : ''}
+      ${ar.reason ? `<div class="task-field acceptance-decision ${escapeHtml(ar.decision||'')}"><b>${escapeHtml(decisionLabel||'验收结果')}</b><span>${escapeHtml(ar.reason)} · 置信度 ${Math.round((ar.confidence||0)*100)}%</span></div>` : ''}
+      ${(ar.missing||[]).length ? `<div class="task-field"><b>缺少</b><span>${escapeHtml(ar.missing.join('；'))}</span></div>` : ''}
+      ${(ar.next_steps||[]).length ? `<div class="task-field"><b>补交</b><span>${escapeHtml(ar.next_steps.join('；'))}</span></div>` : ''}
+      ${(ar.evidence_refs||[]).length ? `<div class="task-field"><b>依据</b><span>${escapeHtml(ar.evidence_refs.join('；'))}</span></div>` : ''}
+       ${requiredApps.length ? `<div class="task-apps"><small>必需应用</small>${requiredApps.map(appChipTiny).join('')}</div>` : ''}
+       ${optionalApps.length ? `<div class="task-apps"><small>可选应用</small>${optionalApps.map(appChipTiny).join('')}</div>` : ''}
+       ${t.app_reason ? `<div class="task-field"><b>应用建议</b><span>${escapeHtml(t.app_reason)}${t.app_confidence ? `（${Math.round(t.app_confidence*100)}%）` : ''}</span></div>` : ''}
+    </div>
+    <button data-edit="${i}">编辑</button>
+  </div>`;
+}
+function typeName(x){
+  return ({learn:'学习',practice:'练习',review:'复盘',build:'构建',write:'写作',research:'研究'}[x] || x || '任务');
+}
+function appChipTiny(exe){
+  const app = allApps.find(a=>(a.exe||'').toLowerCase()===String(exe).toLowerCase());
+  return `<span class="task-app-chip"><img src="${escapeHtml(app?.icon||'')}" onerror="this.style.display='none'">${escapeHtml(app?.name||exe)}</span>`;
+}
+async function uploadEvidenceFile(idx, input){
+  const files=input?.files;
+  if(!files || !files.length){ toast('请先选择交付物文件', false); return; }
+  let ok = true;
+  for(const file of files){
+    logEvent('upload_selected','已选择交付物文件',{idx,name:file.name,size:file.size});
+    const fd = new FormData();
+    fd.append('idx', String(idx));
+    fd.append('file', file);
+    logEvent('upload_start','开始上传交付物',{idx,name:file.name,size:file.size});
+    try{
+      const r = await uploadApi('upload-evidence', fd);
+      logEvent('upload_done','交付物上传成功',{idx,file:r.evidence||file.name});
+    }catch(e){
+      logEvent('upload_failed','交付物上传失败',{idx,name:file.name,error:e.message});
+      toast('上传失败：'+file.name, false);
+      ok = false;
+    }
+  }
+  if(input) input.value='';
+  _lastFilePickTs = 0;  // allow full refresh to show new evidence files
+  if(ok) toast('交付物已保存');
+  await load();
+}
+function renderTaskEditor(){
+  const list = $('#taskEditorList');
+  if(!list) return;
+  list.innerHTML = state.tasks.map((t,i)=>`<div class="task-edit-row">
+    <div class="task-index">${i+1}</div>
+    <div class="task-edit-main">
+      <input class="task-input" data-task-input="${i}" value="${escapeHtml(t.text || t.title || '')}" placeholder="输入任务标题">
+      <small>${escapeHtml([typeName(t.type), t.estimated_minutes ? `${t.estimated_minutes} 分钟` : '', t.expected_output ? `交付物：${t.expected_output}` : ''].filter(Boolean).join(' · '))}</small>
+    </div>
+    <button class="task-remove" data-remove-task="${i}">删除</button>
+  </div>`).join('') || '<p class="hint">还没有任务，点击“新增任务”开始。</p>';
+}
+function renderCatalog(){
+  const box = $('#catalogCards');
+  if(!box) return;
+  const cats = state.app_catalog?.categories || [];
+  box.innerHTML = cats.map(cat=>`<div class="catalog-group" data-catalog-group="${escapeHtml(cat.name||'')}">
+     <h4>${escapeHtml(cat.name||'未命名类别')} <button data-remove-catalog-category>删除大类</button></h4>
+    ${(cat.children||[]).map(ch=>`<div class="catalog-sub" data-catalog-row data-cat="${escapeHtml(cat.name||'')}" data-sub="${escapeHtml(ch.name||'')}">
+      <div class="catalog-sub-head"><b>${escapeHtml(ch.name||'未命名小类')}</b><span>${(ch.apps||[]).length} 个应用</span></div>
+      <div class="catalog-apps">${(ch.apps||[]).map(catalogAppChip).join('') || '<span class="hint">暂无应用 · AI 未识别到此类应用，可手动添加</span>'}</div>
+       <div class="catalog-add"><button data-open-catalog-picker>选择应用</button><button data-add-catalog-sub>新增小类</button><button data-remove-catalog-sub>删除小类</button></div>
+    </div>`).join('')}
+  </div>`).join('') || '<p class="hint">还没有 AI 分类。</p>';
+}
+function catalogAppChip(exe){
+  const app = allApps.find(a=>(a.exe||'').toLowerCase()===String(exe).toLowerCase());
+  return `<span class="catalog-app" data-catalog-app="${escapeHtml(exe)}">
+    <img src="${escapeHtml(app?.icon || '')}" onerror="this.style.display='none'">
+    <em>${escapeHtml(app?.name || exe)}</em>
+    <small>${escapeHtml(exe)}</small>
+    <button data-remove-catalog-app>移除</button>
+  </span>`;
+}
+function catalogFromEditor(){
+  const by = new Map();
+  $$('[data-catalog-row]').forEach(row=>{
+    const cat=row.dataset.cat;
+    const sub=row.dataset.sub;
+    const apps=$$('[data-catalog-app]', row).map(x=>x.dataset.catalogApp).filter(Boolean);
+    if(!cat || !sub) return;
+    if(!by.has(cat)) by.set(cat, []);
+    by.get(cat).push({name:sub, apps});
+  });
+  return {categories:[...by.entries()].map(([name,children])=>({name,children}))};
+}
+function renderCatalogPicker(row, q=''){
+  row.querySelector('.catalog-picker')?.remove();
+  const query=q.trim().toLowerCase();
+  const selected=new Set($$('[data-catalog-app]', row).map(x=>x.dataset.catalogApp.toLowerCase()));
+  const apps=allApps.filter(a=>{
+    const hay=[a.name,a.exe,a.title].join(' ').toLowerCase();
+    return !selected.has((a.exe||'').toLowerCase()) && (!query || hay.includes(query));
+  }).slice(0,80);
+  row.insertAdjacentHTML('beforeend', `<div class="catalog-picker">
+    <input data-catalog-search placeholder="搜索应用">
+    <div class="catalog-pick-list">${apps.map(a=>`<button data-pick-catalog-app="${escapeHtml(a.exe)}">
+      <img src="${escapeHtml(a.icon||'')}" onerror="this.style.display='none'">
+      <span>${escapeHtml(a.name||a.exe)}</span><small>${escapeHtml(a.exe)}</small>
+    </button>`).join('') || '<p class="hint">没有可添加的应用。</p>'}</div>
+  </div>`);
+  row.querySelector('[data-catalog-search]').value=q;
+  row.querySelector('[data-catalog-search]').focus();
+}
+function renderAppPicker(box, q=''){
+  const query=q.trim().toLowerCase();
+  const apps=usableApps.filter(a=>{
+    const hay=[a.name,a.exe,a.title].join(' ').toLowerCase();
+    return !query || hay.includes(query);
+  }).slice(0,100);
+  box.innerHTML = `<div class="catalog-picker">
+    <input data-request-search placeholder="搜索应用">
+    <div class="catalog-pick-list">${apps.map(a=>`<button data-request-pick="${escapeHtml(a.exe)}">
+      <img src="${escapeHtml(a.icon||'')}" onerror="this.style.display='none'">
+      <span>${escapeHtml(a.name||a.exe)}</span><small>${escapeHtml(a.exe)}</small>
+    </button>`).join('') || '<p class="hint">没有匹配的应用。</p>'}</div>
+  </div>`;
+  box.querySelector('[data-request-search]').value=q;
+  box.querySelector('[data-request-search]').focus();
+}
+function renderDesktop(){
+  if(!$('#desktopApps')) return;
+  const wanted = new Set([...(state.task_apps || []), ...(state.ai_task_apps || []), ...(state.manual_task_apps || [])].map(x=>x.toLowerCase()));
+  const aiApps = new Set((state.ai_task_apps || []).map(x=>x.toLowerCase()));
+  const manualApps = new Set((state.manual_task_apps || []).map(x=>x.toLowerCase()));
+  const apps = [...wanted].map(exe=>allApps.find(a=>(a.exe||'').toLowerCase()===exe) || {exe,name:exe,icon:''});
+  if(state.legacy_app_assignment) $('#desktopSource').textContent += ' · 旧版分配，可重新匹配';
+  $('#desktopSource').textContent = `分类${state.app_catalog_ready?'已完成':'生成中'} · AI ${state.ai_task_apps?.length||0} 个 · 手动 ${state.manual_task_apps?.length||0} 个`;
+  $('#desktopApps').innerHTML = apps.map(app=>{
+    const exeLower = (app.exe||'').toLowerCase();
+    const isAI = aiApps.has(exeLower) && !manualApps.has(exeLower);
+    const badge = isAI ? '<span class="app-badge ai" title="AI 自动识别">AI</span>' : '<span class="app-badge manual" title="手动添加">手</span>';
+    return `<button class="desktop-app" data-open-app="${escapeHtml(app.exe)}">
+    <img src="${escapeHtml(app.icon || '')}" onerror="this.style.display='none'">
+    <span>${escapeHtml(app.name || app.exe)}</span>
+    ${badge}
+    <i data-remove-desktop-app="${escapeHtml(app.exe)}" role="button" tabindex="0" title="从工作桌面移除">×</i>
+  </button>`;
+  }).join('') || '<p class="hint">还没有选择任务应用。去“应用分类”页勾选桌面显示。</p>';
+  $('#desktopTasks').innerHTML = state.tasks.map((t,i)=>`<span class="${t.done?'done':''}">${i+1}. ${escapeHtml(t.text || t.title || '')}</span>`).join('');
+}
+function editorTasks(){
+  const inputs = $$('[data-task-input]');
+  if(inputs.length) return inputs.map((x,i)=>({...state.tasks[i], text:x.value.trim(), title:x.value.trim()})).filter(x=>x.title);
+  return ($('#tasksText')?.value || '').split(/\n+/).map(x=>x.trim()).filter(Boolean).map(x=>({text:x,title:x}));
+}
+function formatFocusElapsed(task){
+  const started=task.started_at?new Date(task.started_at).getTime():0;
+  const seconds=Math.max(0,Math.round((Number(task.actual_minutes)||0)*60)+(started?Math.floor((Date.now()-started)/1000):0));
+  return [Math.floor(seconds/3600),Math.floor(seconds%3600/60),seconds%60].map(x=>String(x).padStart(2,'0')).join(':');
+}
+function updateClock(){
+  $('#clock').textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+  const timer=$('#focusElapsed');
+  if(timer){
+    const started=timer.dataset.started?new Date(timer.dataset.started).getTime():0;
+    const seconds=Math.max(0,Math.round((Number(timer.dataset.actual)||0)*60)+(started?Math.floor((Date.now()-started)/1000):0));
+    timer.textContent=[Math.floor(seconds/3600),Math.floor(seconds%3600/60),seconds%60].map(x=>String(x).padStart(2,'0')).join(':');
+  }
+}
+function drawHistory(){
+  const c = $('#historyChart'), x = c.getContext('2d'), h = state.history || [];
+  const W = c.width, H = c.height;
+  const pad = { top: 16, right: 12, bottom: 28, left: 36 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  x.clearRect(0, 0, W, H);
+
+  // Grid lines
+  x.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface-200').trim() || '#e5e5e7';
+  x.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (chartH / 4) * i;
+    x.beginPath();
+    x.moveTo(pad.left, y);
+    x.lineTo(W - pad.right, y);
+    x.stroke();
+  }
+
+  // Y-axis labels
+  x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
+  x.font = '10px "Inter", ui-sans-serif, sans-serif';
+  x.textAlign = 'right';
+  x.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (chartH / 4) * i;
+    const val = 100 - i * 25;
+    x.fillText(val + '%', pad.left - 6, y);
+  }
+
+  if (h.length < 2) {
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
+    x.font = '13px "Inter", ui-sans-serif, sans-serif';
+    x.fillText('暂无足够数据', W / 2, H / 2 - 8);
+    x.font = '11px "Inter", ui-sans-serif, sans-serif';
+    x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted-light').trim() || '#a1a1aa';
+    x.fillText('至少完成 2 天后展示趋势', W / 2, H / 2 + 10);
+    return;
+  }
+
+  const data = h.slice(-10);
+  const stepX = data.length > 1 ? chartW / (data.length - 1) : chartW;
+
+  // Compute points
+  const points = data.map((d, i) => ({
+    x: pad.left + i * stepX,
+    y: pad.top + chartH - (Math.min(d.completion_pct || 0, 100) / 100) * chartH,
+    pct: d.completion_pct || 0,
+    label: d.date || ''
+  }));
+
+  // Area gradient fill
+  const grad = x.createLinearGradient(0, pad.top, 0, pad.top + chartH);
+  grad.addColorStop(0, 'rgba(99, 102, 241, 0.22)');
+  grad.addColorStop(0.6, 'rgba(99, 102, 241, 0.07)');
+  grad.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
+
+  // Draw smooth area
+  x.beginPath();
+  x.moveTo(points[0].x, pad.top + chartH);
+  x.lineTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const cpx = (prev.x + curr.x) / 2;
+    x.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
+  }
+  x.lineTo(points[points.length - 1].x, pad.top + chartH);
+  x.closePath();
+  x.fillStyle = grad;
+  x.fill();
+
+  // Draw smooth line
+  x.beginPath();
+  x.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const cpx = (prev.x + curr.x) / 2;
+    x.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
+  }
+  x.strokeStyle = '#6366f1';
+  x.lineWidth = 2.5;
+  x.lineCap = 'round';
+  x.lineJoin = 'round';
+  x.stroke();
+
+  // Data dots
+  points.forEach((p, i) => {
+    // Outer glow
+    x.beginPath();
+    x.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    x.fillStyle = 'rgba(99, 102, 241, 0.15)';
+    x.fill();
+    // White ring
+    x.beginPath();
+    x.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+    x.fillStyle = '#ffffff';
+    x.fill();
+    // Indigo center
+    x.beginPath();
+    x.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+    x.fillStyle = '#6366f1';
+    x.fill();
+  });
+
+  // X-axis date labels
+  x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
+  x.font = '9px "Inter", ui-sans-serif, sans-serif';
+  x.textAlign = 'center';
+  x.textBaseline = 'top';
+  const labelStep = data.length > 7 ? 2 : 1;
+  points.forEach((p, i) => {
+    if (i % labelStep === 0 || i === points.length - 1) {
+      const d = data[i].date || '';
+      const short = d.length >= 5 ? d.slice(5) : d; // MM-DD
+      x.fillText(short, p.x, pad.top + chartH + 6);
+    }
+  });
+}
+function formatDuration(seconds){
+  const s=Math.max(0,Math.round(Number(seconds)||0));
+  if(s<60) return `${s}秒`;
+  const m=Math.floor(s/60), h=Math.floor(m/60), d=Math.floor(h/24);
+  if(d) return `${d}天${h%24}小时`;
+  if(h) return `${h}小时${m%60}分`;
+  return `${m}分钟`;
+}
+function latestAppMatchEvent(events){
+  return [...(events||[])].reverse().find(x=>x.kind==='ai_apps'||x.kind==='ai_apps_failed');
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+async function load(){
+  state = normalizeState(await api('state'));
+  render();
+  if(state.tasks?.length && !sessionStorage.getItem('taskVergeRecovered')){
+    sessionStorage.setItem('taskVergeRecovered','1');
+    toast(`\u5df2\u6062\u590d\u4eca\u65e5\u4efb\u52a1\uff0c\u5df2\u5b8c\u6210 ${state.tasks.filter(t=>t.done).length}/${state.tasks.length}`);
+  }
+}
+function normalizeState(data){
+  const goalText = g => {
+    const text = typeof g === 'object' ? (g.title || g.goal || g.name || '') : String(g || '');
+    return text === '[object Object]' ? '' : text;
+  };
+  data.goal = goalText(data.goal);
+  data.goals = (data.goals || []).map(goalText);
+  return data;
+}
+async function refreshFg(){
+  if(activePage!=='dashboard') return;
+  try{
+    const s = await api('state');
+    // Lightweight status refresh; foreground details are intentionally not exposed.
+    $('#focus').textContent = '前台：'+(s.focus||'--');
+    // update completion ring silently (completion_pct can change on eval)
+    $('#pct').textContent = Math.round(s.completion_pct||0)+'%';
+    $('#progressArc').style.strokeDashoffset = 314 - 314*Math.max(0,Math.min(100,s.completion_pct||0))/100;
+  }catch{}
+}
+let _lastFullSyncTs = 0;
+function setGenerationUi(kind, message){
+  const box=$('#generationStatus');
+  if(!box) return;
+  box.hidden=false;
+  box.className=`generation-status ${kind}`;
+  box.innerHTML=`<span>${escapeHtml(message)}</span>${kind==='error'?'<button id="generationRetry">重试</button>':''}`;
+  ['generate','regenerateTasks'].forEach(id=>{ const button=$('#'+id); if(button) button.disabled=kind==='running'; });
+  const regenerate=$('#regenerateTasks');
+  if(regenerate) regenerate.textContent=kind==='running'?'生成中…':'重新生成任务';
+}
+async function refreshLive(){
+  if(activePage!=='dashboard') return;
+  await refreshFg();
+  // Full render every 30s to pick up task and acceptance changes.
+  if(Date.now() - _lastFullSyncTs > 30000){
+    _lastFullSyncTs = Date.now();
+    try{ state = normalizeState(await api('state')); render(); }catch{}
+  }
+}
+async function runGeneration(){
+  setGenerationUi('running','正在启动任务生成…');
+  try{
+    const started=await api('generate',{}); const jobId=started.job_id; let status=null;
+    const deadline=Date.now()+300000;
+    while(Date.now()<deadline){
+      await new Promise(r=>setTimeout(r,1000));
+      status=await api('generate-status');
+      if(jobId && status.job_id && status.job_id!==jobId) continue;
+      setGenerationUi('running',`${status.step}${status.message?'：'+status.message:''}`);
+      if(!status.running) break;
+    }
+    if(!status || status.running){ setGenerationUi('error','生成超时，任务可能仍在后台处理中。'); return; }
+    if(status.mode==='error' || status.mode==='conflict'){
+      setGenerationUi('error',`生成失败：${status.message||status.error||'请稍后重试'}`);
+      return;
+    }
+    await load();
+    const count=(state.tasks||[]).filter(t=>!t.done).length;
+    setGenerationUi(status.mode==='fallback'?'warning':'success',
+      status.mode==='fallback'?`AI 生成失败，已使用本地模板生成 ${count} 个任务。`:`生成成功：已生成 ${count} 个待执行任务。`);
+  }catch(err){
+    setGenerationUi('error',`生成失败：${err.message||err}`);
+  }
+}
+async function run(name){
+  try{
+    if(name==='generate') return await runGeneration();
+    if(name==='generate'){
+      toast('启动生成任务...');
+      const started = await api(name,{});
+      toast(started.message || '已开始生成任务');
+      for(let i=0;i<80;i++){
+        await new Promise(r=>setTimeout(r,500));
+        const s=await api('generate-status');
+        toast(`${s.step}${s.message?'：'+s.message:''}`, s.step!=='失败');
+        if(!s.running && s.step!=='空闲') break;
+      }
+      await load();
+      const finalStatus = await api('generate-status');
+      if(finalStatus.message && finalStatus.message.includes('fallback')){
+        showModal('已用本地模板生成', '未配置 DeepSeek Key 或调用失败，已用本地兜底任务模板生成 3 个任务。\n如需 AI 智能生成，请去"设置"页配置 DeepSeek API Key。', 'warn');
+      }
+      return;
+    }
+    toast((runNames[name]||name)+'中...');
+    const r = await api(name,{});
+    toast(r.message || '完成', r.ok);
+    if(name==='evaluate'){
+      const passed=(state.tasks||[]).filter(t=>t.done).length, total=(state.tasks||[]).length;
+      showModal(passed===total?'验收完成':'验收未完成',`已通过 ${passed}/${total} 项。${passed===total?'今天的任务可以收尾并保存复盘。':'请查看任务卡片中的缺少项和补交建议。'}`,'warn');
+    }
+    await load();
+  }catch(e){
+    toast('请求失败：'+e.message, false);
+  }
+}
+document.addEventListener('click', async e=>{
+  if(e.target.closest?.('[data-start-recovery]')){
+    try{ const r=await api('recovery',{}); await api('task-state',{idx:r.idx,status:'doing'}); toast('补救行动已开始'); await load(); }
+    catch(err){ toast('当前没有需要补救的任务',false); }
+    return;
+  }
+  const feedback=e.target.closest?.('[data-feedback]');
+  if(feedback){
+    const labels={too_hard:'任务太难',stuck:'我卡住了',no_time:'今天时间不够',wrong_direction:'任务方向不对',too_easy:'任务太简单'};
+    const kind=feedback.dataset.feedback, idx=+feedback.dataset.feedbackIdx;
+    const detail=await promptDlg(kind==='stuck'?'现在只做哪一个最小动作？（例如：找到 X 的调用位置）':'补充反馈（可直接确认）',labels[kind]||'');
+    if(!detail) return;
+    try{
+      const result=await api('feedback',{idx,kind,text:detail}), d=result.decision||{};
+      if(kind==='stuck'){
+        await api('task-state',{idx,status:'partial',continuation_note:`先做：${detail}` ,next_action:`先做：${detail}`});
+      }
+      showModal(d.applied?'已自动调整':'已记录反馈',`${d.reason||''}\n可信度：${Math.round((d.confidence||0)*100)}%${(d.evidence||[]).length?'\n依据：'+d.evidence.join('；'):''}`,d.applied?'success':'warn');
+      await load();
+    }catch(err){ toast('反馈失败：'+err.message,false); }
+    return;
+  }
+  const rating=e.target.closest?.('[data-recall-rating]');
+  if(rating){
+    try{
+      await api('task-rating',{idx:+rating.dataset.ratingIdx,rating:rating.dataset.recallRating});
+      toast(`已记录回忆质量：${rating.textContent.trim()}`); await load();
+    }catch(err){ toast('评分失败：'+err.message,false); }
+    return;
+  }
+  const agentAction=e.target.closest?.('[data-agent]');
+  if(agentAction){
+    try{ await api('agent-'+agentAction.dataset.agent,{run_id:agentAction.dataset.runId}); toast('Agent 状态已更新'); await load(); }
+    catch(err){ toast('Agent 操作失败：'+err.message,false); }
+    return;
+  }
+  if(e.target.dataset.startTask!==undefined){
+    const idx=+e.target.dataset.startTask, previous=state.tasks[idx]?.status;
+    state.tasks[idx].status='doing'; state.tasks[idx].started_at=new Date().toISOString(); render();
+    try{ await api('task-state',{idx,status:'doing'}); await load(); }
+    catch(err){ state.tasks[idx].status=previous; render(); toast('开始任务失败：'+err.message,false); }
+    return;
+  }
+  if(e.target.closest?.('[data-recovery]')){
+    const r=await api('recovery',{}); await api('task-state',{idx:r.idx,status:'doing'}); toast('已开始今日恢复'); await load(); return;
+  }
+  const sessionAction=e.target.closest?.('[data-session-action]');
+  if(sessionAction){
+    const idx=+sessionAction.dataset.sessionIdx, action=sessionAction.dataset.sessionAction;
+    const status=action==='partial'?'partial':'paused';
+    const continuation_note=action==='partial' ? await promptDlg('留下下一次继续的位置（可选）',state.tasks[idx]?.continuation_note||'') : '';
+    const previous=state.tasks[idx]?.status;
+    state.tasks[idx].status=status; render();
+    try{
+      await api('task-state',{idx,status,continuation_note});
+      toast(action==='partial'?'已保存部分成果':action==='end'?'本次专注已结束':'本次专注已暂停'); await load();
+    }catch(err){
+      state.tasks[idx].status=previous; render(); toast('暂停任务失败：'+err.message,false);
+    }
+    return;
+  }
+  if(e.target.dataset.primaryAction){
+    const a=e.target.dataset.primaryAction;
+    if(a==='settings'){ document.querySelector(`.nav-item[data-page="${a}"]`)?.click(); return; }
+    if(a==='tasks'){ $('#currentTaskBar')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+    if(a==='generate'){ await run('generate'); return; }
+    if(a==='archive'){ await api('archive',{}); toast('已保存今日复盘'); await load(); return; }
+  }
+  if(e.target.id==='startNextCycle'){
+    try{ await api('next-cycle',{}); toast('复盘完成，正在生成下一轮任务'); await runGeneration(); }
+    catch(err){ toast('无法开始下一轮：'+err.message,false); }
+    return;
+  }
+  const start=e.target.closest?.('[data-begin-task]');
+  if(start){
+    try{
+      const result=await api('agent-start',{idx:+start.dataset.beginTask,max_steps:20});
+      toast(result.run?.status==='awaiting_confirmation'?'等待确认':'Agent 已开始执行'); await load();
+    }catch(err){ toast('无法开始任务：'+err.message,false); }
+    return;
+  }
+  const taskAction=e.target.closest('[data-task-action]');
+  if(taskAction){
+    const task=taskAction.closest('.task'), idx=[...$$('#taskList .task')].indexOf(task);
+    if(idx>=0){ await api('task-adjust',{idx,action:taskAction.dataset.taskAction}); toast(taskAction.dataset.taskAction==='extend'?'\u5df2\u5ef6\u957f 15 \u5206\u949f':'\u5df2\u8df3\u8fc7\u4eca\u5929\u4efb\u52a1'); await load(); }
+    return;
+  }
+  if(e.target.id==='undoAction'){
+    await api('undo',{}); toast('\u5df2\u64a4\u9500\u4e0a\u4e00\u6b21\u64cd\u4f5c'); await load(); return;
+  }
+  const edit=e.target.closest('[data-edit]');
+  if(edit){
+    e.stopImmediatePropagation();
+    const idx=+edit.dataset.edit, text=await promptDlg('编辑任务',state.tasks[idx]?.text||'');
+    if(text){const reason=state.plan_locked?await promptDlg('计划已锁定，请填写修改原因'):''; await api('task',{idx,text,reason}); await load();}
+    return;
+  }
+  if(e.target.id==='toggleLock' || e.target.id==='dashboardToggleLock'){
+    e.stopImmediatePropagation();
+    const reason=state.plan_locked?await promptDlg('解锁原因'):'';
+    await api('lock-plan',{locked:!state.plan_locked,reason}); toast(state.plan_locked?'已解锁':'已锁定'); await load(); return;
+  }
+  if(e.target.id==='saveTasks'){
+    e.stopImmediatePropagation();
+    const tasks=editorTasks();
+    if(!tasks.length){ showModal('无法保存','至少保留一个任务。','warn'); return; }
+    const reason=state.plan_locked?await promptDlg('计划已锁定，请填写修改原因'):'';
+    await api('tasks',{tasks,reason}); toast('任务已保存'); await load(); return;
+  }
+  if(e.target.dataset.removeArchive!==undefined){
+    const date=e.target.dataset.removeArchive;
+    if(!confirmDlg(`确定删除 ${date} 的归档吗？此操作不可恢复。`)) return;
+    await api('archive-delete',{date}); toast('归档已删除'); await load(); return;
+  }
+  const archive = e.target.closest('[data-archive]');
+  if(archive){
+    const a = state.archives?.[+archive.dataset.archive];
+    if(a) showModal('归档详情', `${a.date || ''}\n${a.goal || ''}\n任务：${doneCount(a)}/${(a.tasks||[]).length}\n前台：${Object.entries(a.fg||{}).map(([k,v])=>`${k} ${v}s`).join('，') || '暂无数据'}`, 'warn');
+    return;
+  }
+  if(e.target.dataset.evidenceFile!==undefined){
+    logEvent('upload_pick','点击上传交付物按钮',{idx:+e.target.dataset.evidenceFile});
+    _lastFilePickTs = Date.now();
+    return;
+  }
+  if(e.target.dataset.goto){
+    const page = e.target.dataset.goto;
+    $$('.nav-item').forEach(x=>x.classList.remove('active'));
+    $(`.nav-item[data-page="${page}"]`)?.classList.add('active');
+    $$('.page').forEach(x=>x.classList.remove('active'));
+    $('#'+page).classList.add('active');
+    setPage(page);
+    activePage = page;
+    document.body.classList.toggle('focus-active', page==='dashboard' && (state.tasks||[]).some(t=>!t.done&&t.status==='doing'));
+    return;
+  }
+  const nav = e.target.closest('.nav-item');
+  if(nav){ activePage=nav.dataset.page; $$('.nav-item').forEach(x=>x.classList.remove('active')); nav.classList.add('active'); $$('.page').forEach(x=>x.classList.remove('active')); $('#'+nav.dataset.page).classList.add('active'); document.body.classList.toggle('focus-active',activePage==='dashboard'&&(state.tasks||[]).some(t=>!t.done&&t.status==='doing')); setPage(nav.dataset.page); if(activePage==='dashboard') refreshLive(); return; }
+  if(e.target.id==='refresh') return load();
+  if(e.target.id==='generate') return run('generate');
+  if(e.target.id==='evaluate') return run('evaluate');
+  if(e.target.id==='regenPlan'){ await api('plan',{}); toast('时间块已生成'); await load(); return; }
+  if(e.target.id==='coachSend'){
+    const input=$('#coachInput'), message=input.value.trim();
+    if(!message){ toast('请输入对话内容', false); return; }
+    input.value='';
+    const r=await api('chat',{message});
+    renderCoachAction(r.action, r.reply);
+    await load();
+    return;
+  }
+  if(e.target.dataset.insightIgnore!==undefined){
+    await api('coach-action',{action:{type:'ignore_insight',insight_id:e.target.dataset.insightIgnore}});
+    toast('已忽略此项洞察'); await load();
+    return;
+  }
+  if(e.target.id==='coachQuietToday'){
+    await api('coach-action',{action:{type:'quiet'}});
+    toast('已静默至明日'); return;
+  }
+  if(e.target.dataset.insightChat!==undefined){
+    const r=await api('chat',{message:'请处理这个洞察：'+e.target.dataset.insightChat});
+    renderCoachAction(r.action, r.reply);
+    await load();
+    return;
+  }
+  if(e.target.id==='confirmCoachAction'){
+    const action=JSON.parse($('#coachAction').dataset.action||'{}');
+    const r=await api('coach-action',{action});
+    toast(r.message||'已执行'); $('#coachAction').innerHTML=''; await load(); return;
+  }
+  if(e.target.id==='cancelCoachAction'){ $('#coachAction').innerHTML=''; return; }
+  if(e.target.dataset.aiEvaluate!==undefined){
+    const idx=+e.target.dataset.aiEvaluate, t=state.tasks[idx] || {};
+    let evidence=t.evidence || await askEvidence();
+    if(!evidence){ e.target.checked=!!t.done; showModal('不能验收', '未提交交付物或证据。请先上传交付物，或填写文件路径/链接/完成说明。', 'warn'); return; }
+    await api('task-evidence',{idx,evidence});
+    const r=await api('evaluate-task',{idx}); await load();
+    const detail=r.result||{};
+    const followUp=(detail.next_steps||[])[0], missing=(detail.missing||[]).join('；');
+    showModal(r.pass?'验收通过':'需要补交',[detail.reason,missing&&`缺少：${missing}`,followUp&&`下一步：${followUp}`].filter(Boolean).join('\n')||'验收完成',r.pass?'success':'warn'); return;
+  }
+  if(e.target.id==='addTask'){
+    const list=$('#taskList');
+    if(!list.querySelector('.task-add-inline')){
+      const row=document.createElement('div');
+      row.className='task task-add-inline';
+      row.innerHTML='<div style="width:28px;display:grid;place-items:center"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></div><div class="task-body"><input id="addTaskInput" class="task-input" placeholder="输入任务名称，回车添加" style="width:100%"></div>';
+      list.prepend(row);
+      const inp=row.querySelector('#addTaskInput');
+      inp.focus();
+      inp.addEventListener('keydown',async ev=>{
+        if(ev.key==='Enter'&&inp.value.trim()){
+          const reason=state.plan_locked?await promptDlg('计划已锁定，请填写修改原因'):'';
+          await api('tasks',{tasks:[...state.tasks.map(t=>({...t})),{text:inp.value.trim()}],reason});
+          await load();
+        }else if(ev.key==='Escape'){ row.remove(); }
+      });
+      inp.addEventListener('blur',()=>{ if(!inp.value.trim()) row.remove(); });
+    }
+    return;
+  }
+  if(e.target.id==='regenerateTasks'){
+    const goal=(state.goals||[])[state.active_goal||0]||'当前目标';
+    if(confirmDlg(`重新生成“${goal}”的任务？当前目标的任务将被替换，其他目标不受影响。`)) await runGeneration();
+    return;
+  }
+  if(e.target.id==='generationRetry'){ await runGeneration(); return; }
+  if(e.target.id==='addTaskInline'){ state.tasks.push({text:'',done:false}); renderTaskEditor(); return; }
+  if(e.target.dataset.removeTask!==undefined){ state.tasks.splice(+e.target.dataset.removeTask,1); renderTaskEditor(); if($('#tasksText')) $('#tasksText').value=state.tasks.map(t=>t.text).join('\n'); return; }
+  if(e.target.id==='saveSettings'){
+    const goals=$('#goalsText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+    if(!goals.length){ showModal('无法保存','请至少设置一个目标。','warn'); return; }
+    const current=state.goals?.[state.active_goal||0];
+    const active=Math.max(0, goals.indexOf(current));
+    await api('settings',{goals,active_goal:active,autostart:$('#autostart').checked,goal_details:{
+      outcome:$('#goalOutcome')?.value.trim()||'', deadline:$('#goalDeadline')?.value||'',
+      baseline:$('#goalBaseline')?.value.trim()||'',
+      success_criteria:($('#goalCriteria')?.value||'').split(/\n+/).map(x=>x.trim()).filter(Boolean),
+      constraints:($('#goalConstraints')?.value||'').split(/\n+/).map(x=>x.trim()).filter(Boolean)
+    },task_gen:{
+      available_minutes:+($('#genAvailableMinutes')?.value || 120),
+      task_count:+($('#genTaskCount')?.value || 3),
+      max_task_minutes:+($('#genMaxTaskMinutes')?.value || 45),
+      prefer_continuation:!!$('#genPreferContinuation')?.checked,
+      force_measurable_output:!!$('#genForceOutput')?.checked
+    },desired_retention:+($('#desiredRetention')?.value || 0.9),privacy:{
+      cloud_ai_enabled:!!$('#privacyCloudAI')?.checked,
+      upload_raw_file_enabled:!!$('#privacyUpload')?.checked,
+      fine_grained_fg_enabled:!!$('#privacyFG')?.checked,
+      share_foreground_with_ai:!!$('#privacyShareFG')?.checked,
+      diagnostic_log_verbose:!!$('#privacyLogVerbose')?.checked
+    },focus_guard:{enabled:!!$('#focusGuardEnabled')?.checked},schedule:{focus_template:$('#focusTemplate')?.value || '90'},workspace:$('#workspace')?.value.trim()||''});
+    toast('设置已保存'); await load();
+  }
+  if(e.target.id==='pauseFocus30'){
+    await api('focus-policy',{action:'pause',minutes:30}); toast('已暂停专注 30 分钟'); await load(); return;
+  }
+  if(e.target.id==='clearFocusOverrides'){
+    if(!confirmDlg('清除所有应用例外吗？')) return;
+    await api('focus-policy',{action:'clear_overrides'}); toast('应用例外已清除'); await load(); return;
+  }
+  if(e.target.id==='addCatalogCategory'){
+    const name=await promptDlg('新大类名称');
+    state.app_catalog=state.app_catalog||{categories:[]};
+    const categories=state.app_catalog.categories=state.app_catalog.categories||[];
+    if(name && !categories.some(x=>(x.name||'').toLowerCase()===name.toLowerCase())){
+      categories.push({name,children:[{name:'未分类',apps:[]}]}); renderCatalog(); toast('已新增大类');
+    }
+    return;
+  }
+  if(e.target.dataset.addCatalogSub!==undefined){
+    const group=e.target.closest('[data-catalog-group]'), name=await promptDlg('新小类名称');
+    if(group && name){ const cat=(state.app_catalog.categories||[]).find(x=>(x.name||'')===group.dataset.catalogGroup); if(cat) cat.children=(cat.children||[]).concat({name,apps:[]}); renderCatalog(); toast('已新增小类'); }
+    return;
+  }
+  if(e.target.dataset.removeCatalogSub!==undefined){
+    if(!confirmDlg('删除这个小类及其应用归属吗？')) return;
+    e.target.closest('[data-catalog-row]')?.remove(); return;
+  }
+  if(e.target.dataset.removeCatalogCategory!==undefined){
+    if(!confirmDlg('删除这个大类及其全部小类吗？')) return;
+    e.target.closest('[data-catalog-group]')?.remove(); return;
+  }
+  if(e.target.id==='saveCatalog'){
+    await api('catalog',{catalog:catalogFromEditor()});
+    toast('分类已保存'); await load(); return;
+  }
+  if(e.target.id==='regenerateCatalog'){
+    if(!confirmDlg('此操作会清空当前分类并由 AI 重新生成，你手动调整的分类将丢失。是否继续？')) return;
+    await api('catalog-regenerate',{});
+    toast('已触发 AI 重新分类，请稍候');
+    setTimeout(load, 3000); return;
+  }
+  if(e.target.dataset.openCatalogPicker!==undefined){
+    const row=e.target.closest('[data-catalog-row]');
+    if(row.querySelector('.catalog-picker')) row.querySelector('.catalog-picker').remove();
+    else { if(!allApps.length) await loadProcesses(); renderCatalogPicker(row); }
+    return;
+  }
+  const pickedCatalog = e.target.closest('[data-pick-catalog-app]');
+  if(pickedCatalog){
+    const row=pickedCatalog.closest('[data-catalog-row]');
+    const exe=pickedCatalog.dataset.pickCatalogApp;
+    if(!row.querySelector(`[data-catalog-app="${CSS.escape(exe)}"]`)) row.querySelector('.catalog-apps').insertAdjacentHTML('beforeend', catalogAppChip(exe));
+    renderCatalogPicker(row, row.querySelector('[data-catalog-search]')?.value || '');
+    return;
+  }
+  if(e.target.dataset.removeCatalogApp!==undefined){ e.target.closest('[data-catalog-app]').remove(); return; }
+  const removeApp = e.target.closest('[data-remove-desktop-app]');
+  if(removeApp){ e.stopPropagation(); await api('request-app',{action:'remove',app:removeApp.dataset.removeDesktopApp}); toast('已移除'); await load(); return; }
+  const open = e.target.closest('[data-open-app]');
+  if(open){ await api('open-app',{exe:open.dataset.openApp}); toast('已打开 '+open.dataset.openApp); return; }
+  if(e.target.dataset.removeEvidence!==undefined){
+    e.preventDefault(); e.stopPropagation();
+    const di = +e.target.dataset.removeEvidence, ej = +e.target.dataset.evIdx;
+    const task = state.tasks[di];
+    if(!task) return;
+    const evList = Array.isArray(task.evidence) ? [...task.evidence] : (task.evidence ? [task.evidence] : []);
+    if(ej < 0 || ej >= evList.length) return;
+    evList.splice(ej, 1);
+    await api('task-evidence-list', {idx: di, evidence: evList});
+    toast('已移除该文件');
+    await load();
+    return;
+  }
+  if(e.target.id==='openRequestPicker'){
+    const box=$('#requestPicker');
+    if(box.innerHTML.trim()) box.innerHTML='';
+    else { if(!allApps.length) await loadProcesses(); renderAppPicker(box); }
+    return;
+  }
+  const reqPick=e.target.closest('[data-request-pick]');
+  if(reqPick){
+    const app=allApps.find(a=>a.exe===reqPick.dataset.requestPick);
+    $('#requestAppName').dataset.exe=reqPick.dataset.requestPick;
+    $('#requestAppName').textContent=(app?.name||reqPick.dataset.requestPick)+' · '+reqPick.dataset.requestPick;
+    $('#requestAddApp').disabled=false; $('#requestRemoveApp').disabled=false;
+    $('#requestPicker').innerHTML='';
+    return;
+  }
+  if(e.target.id==='reinferApps'){
+    if(!confirmDlg('将按每个任务重新匹配必需和可选应用，继续吗？')) return;
+    const previous=latestAppMatchEvent(state.events)?.ts;
+    toast('正在重新匹配应用...');
+    await api('reinfer-apps',{});
+    for(let i=0;i<60;i++){
+      await new Promise(r=>setTimeout(r,1000));
+      const next=await api('state'), event=latestAppMatchEvent(next.events);
+      if(event?.ts && event.ts!==previous){
+        state=normalizeState(next); render();
+        toast(event.kind==='ai_apps'?'应用已重新匹配':'应用匹配失败',event.kind==='ai_apps');
+        return;
+      }
+    }
+    showModal('匹配超时','应用仍在后台匹配，请稍后刷新查看。','warn');
+    return;
+  }
+  if(e.target.id==='requestAddApp'||e.target.id==='requestRemoveApp'){
+    const app=$('#requestAppName').dataset.exe;
+    if(!app) return toast('先选择应用', false);
+    const action=e.target.id==='requestAddApp'?'add':'remove';
+    const r=await api('request-app',{action,app});
+    toast(r.message||'完成', r.ok);
+    $('#requestAppName').dataset.exe=''; $('#requestAppName').textContent='未选择应用';
+    $('#requestAddApp').disabled=true; $('#requestRemoveApp').disabled=true;
+    await load(); return;
+  }
+  if(e.target.id==='saveDeepseekKey'){
+    const key=$('#deepseekKey').value.trim();
+    if(!key && !confirmDlg('确定要清空 DeepSeek Key 吗？清空后将无法使用 AI 生成任务/识别应用。')) return;
+    await api('deepseek-key',{key});
+    $('#deepseekKey').value='';
+    toast('Key 已保存'); await load(); return;
+  }
+  if(e.target.id==='quickStartBreak'){
+    try{
+      await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value});
+      toast('已开始休息'); await load();
+    }catch(_){}
+    return;
+  }
+  if(e.target.id==='quitApp'){
+    const r=$('#quitReason').value.trim();
+    const unfinishedCnt = state.tasks.filter((t,i)=>!t.done).length;
+    const doneCnt = state.tasks.length - unfinishedCnt;
+    const focusSeconds = Object.values(state.fg||{}).reduce((sum,v)=>sum+Number(v||0),0);
+    const summaryPrefix = `\u5df2\u5b8c\u6210 ${doneCnt} \u9879\uff0c\u672a\u5b8c\u6210 ${unfinishedCnt} \u9879\uff0c\u672c\u65e5\u524d\u53f0\u65f6\u95f4 ${formatDuration(focusSeconds)}`;
+    const confirmMsg = unfinishedCnt>0
+      ? `还有 ${unfinishedCnt} 个任务未完成。${r?'':'请先填写退出原因。'}\n点击确定将完全退出 Task Verge 程序（包括托盘）。`
+      : '点击确定将完全退出 Task Verge 程序（包括托盘）。';
+    if(!confirmDlg(summaryPrefix+'\\n'+confirmMsg)) return;
+    try{
+      const res=await api('quit',{reason:r});
+      toast(res.message||'正在退出',res.ok);
+      showExitScreen();
+    }catch(_){}
+    return;
+  }
+  if(e.target.id==='archiveToday'){ await api('archive',{}); toast('今日已归档'); await load(); }
+  if(e.target.dataset.archiveToday!==undefined){ await api('archive',{}); toast('\u5df2\u4fdd\u5b58\u4eca\u65e5\u590d\u76d8'); await load(); return; }
+  if(e.target.id==='exportData'){
+    const data=await api('export');
+    const blob=new Blob([JSON.stringify({exported_at:new Date().toISOString(),...data},null,2)],{type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`task-verge-${new Date().toISOString().slice(0,10)}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    toast('本地数据已导出'); return;
+  }
+  if(e.target.id==='clearFgData'){
+    if(!confirmDlg('确定清除所有前台时间数据吗？此操作不可恢复。')) return;
+    try{
+      const r = await api('clear-fg',{});
+      toast(r.message||'已清除', r.ok);
+      await load();
+    }catch(_){}
+    return;
+  }
+  if(e.target.id==='dismissCrash'){
+    try{ await api('dismiss-crash',{}); }catch(_){}
+    await load();
+    return;
+  }
+});
+document.addEventListener('change', async e=>{
+  if(e.target.dataset.evidenceFile!==undefined){
+    await uploadEvidenceFile(+e.target.dataset.evidenceFile, e.target);
+    return;
+  }
+  if(e.target.id==='goalSelect'){ await api('active-goal',{active_goal:+e.target.value||0}); await load(); }
+});
+document.addEventListener('input', e=>{
+  if(e.target.dataset.catalogSearch!==undefined){ renderCatalogPicker(e.target.closest('[data-catalog-row]'), e.target.value); return; }
+  if(e.target.dataset.requestSearch!==undefined){ renderAppPicker($('#requestPicker'), e.target.value); return; }
+  if(e.target.dataset.taskInput!==undefined && $('#tasksText')) $('#tasksText').value = editorTasks().map(t=>t.text || t.title || '').join('\n');
+  if(e.target.id==='tasksText'){
+    const lines = $('#tasksText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+    const oldFlags = state.tasks.map(t=>!!t.done);
+    state.tasks = lines.map((text,i)=>({text, done: oldFlags[i] || false}));
+    renderTaskEditor();
+  }
+});
+async function loadProcesses(){
+  const r = await api('processes');
+  allApps = r.apps || (r.processes || []).map(p=>({exe:p,name:p,title:'',source:'running',icon:''}));
+  usableApps = r.usable_apps || allApps;
+  renderDesktop();
+  renderCatalog();
+}
+if(claimFrontend()){
+  // Keep the first-level navigation about action and review; advanced app rules stay available in settings/code paths.
+  document.querySelector('[data-page="review"] span')?.replaceChildren('记录');
+  document.querySelector('[data-page="review"]')?.setAttribute('title','记录');
+  setInterval(updateClock,1000);
+  setInterval(refreshLive,2000);
+  setInterval(heartbeat,4000);
+  // Claim the backend session before the first protected state request.
+  ensureSession().then(ok=>{
+    if(!ok) throw new Error('无法建立本地会话，请重试或接管窗口');
+    return load();
+  }).then(showPrivacyNotice).then(loadProcesses).catch(e=>{ toast(e.message,false); if(confirmDlg('本地会话被其他窗口占用。关闭旧窗口后，是否立即重试？')) location.reload(); });
+}else{
+  const takeover=document.createElement('button');
+  takeover.id='takeoverFrontend'; takeover.className='primary'; takeover.textContent='尝试接管窗口';
+  takeover.onclick=()=>{ localStorage.removeItem('taskVergeFrontend'); location.reload(); };
+  document.body.innerHTML = '<div class="shell"><main class="main"><section class="page active"><div class="hero"><div class="hero-copy"><span id="statusPill">已拦截</span><h2>Task Verge 已在另一个窗口运行</h2><p>请回到已打开的桌面窗口继续使用。</p></div></div></section></main></div>';
+  setTimeout(()=>document.querySelector('.hero-copy')?.appendChild(takeover),0);
+}
+async function claimBackendSession(){
+  try{
+    const r = await fetch('/api/claim');
+    const j = await r.json();
+    if(j.ok){ sessionToken = j.token; return true; }
+  }catch(_){}
+  return false;
+}
+// Retry claiming session if lost (e.g. another tab closed, lock expired)
+async function ensureSession(){
+  if(sessionToken) return true;
+  if(!sessionClaimPromise) sessionClaimPromise=(async()=>{
+    for(let i=0;i<9;i++){ // backend session expires after 8 seconds
+      if(await claimBackendSession()) return true;
+      await new Promise(r=>setTimeout(r, 1000));
+    }
+    return false;
+  })();
+  try{ return await sessionClaimPromise; }
+  finally{ sessionClaimPromise=null; }
+}
+async function heartbeat(){
+  if(!sessionToken) return;
+  try{
+    await fetch('/api/heartbeat',{method:'POST',headers:{'Content-Type':'application/json','X-Session':sessionToken},body:'{}'});
+  }catch(_){}
+}
+document.addEventListener('keydown', e=>{
+  if((e.key==='Enter'||e.key===' ') && e.target.dataset.removeDesktopApp!==undefined){ e.preventDefault(); e.target.click(); }
+});
+async function showPrivacyNotice(){
+  if(state.privacy?.monitoring_consent) return;
+  const msg = '本应用会每 2 秒采集一次前台窗口标题（如 "chrome: 某网页"），用于统计专注时间。\n\n数据默认仅保存在本地 fgtime.json；只有你在设置中单独授权后，云 AI 才能使用前台应用时间统计。你可以随时关闭或清除。\n\n点击「我知道了」即表示你已知晓并同意本地监控。';
+  if(confirmDlg(msg, '隐私提示')){
+    await api('privacy-consent',{accepted:true});
+    state.privacy.monitoring_consent=true;
+  }
+}

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Verge</title>
+  <link rel="icon" href="/taskverge.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <!-- Ambient background -->
+  <div class="ambient-bg">
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
+    <div class="ambient-orb orb-3"></div>
+  </div>
+
+  <div class="shell">
+    <aside class="nav">
+      <div class="brand">
+        <span class="mark">
+          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="36" height="36" rx="11" fill="url(#brandGrad)"/>
+            <path d="M12 16h16M12 22h10M12 28h14" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+            <defs><linearGradient id="brandGrad" x1="0" y1="0" x2="40" y2="40"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+          </svg>
+        </span>
+        <div><b>Task Verge</b><small>专注控制台</small></div>
+      </div>
+      <div class="nav-items">
+        <button class="nav-item active" data-page="dashboard" title="总览">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          <span>总览</span>
+        </button>
+        <button class="nav-item" data-page="review" title="复盘">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>复盘</span>
+        </button>
+        <button class="nav-item" data-page="settings" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+          <span>设置</span>
+        </button>
+      </div>
+      <div class="nav-foot">
+        <span id="clock">--:--</span>
+        <small title="关闭窗口只会隐藏到系统托盘；从托盘菜单选择"退出"才会停止程序">本地桌面 · 关闭后驻留托盘</small>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="title">总览</h1>
+          <p id="subtitle">今日专注、任务完成度与前台时间。</p>
+        </div>
+        <div class="actions">
+          <button id="generate">生成任务</button>
+        </div>
+      </header>
+
+      <section class="page active" id="dashboard">
+        <div class="dash-top">
+          <div class="hero">
+            <div class="ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="50"></circle><circle id="progressArc" cx="60" cy="60" r="50"></circle></svg><strong id="pct">0%</strong></div>
+            <div class="hero-copy">
+              <span id="statusPill">就绪</span>
+              <h2 id="goal">尚未设置目标</h2>
+              <p id="focus">前台：--</p>
+              <div id="breakWidget" class="break-widget">
+                <input id="quickBreakReason" placeholder="休息原因（可选）">
+                <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
+                <button id="quickStartBreak">开始休息</button>
+                <span id="breakInfo"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dash-bottom">
+          <div class="panel dash-tasks">
+            <div class="panel-head"><h3>今日任务</h3><div class="panel-actions"><button id="regenerateTasks" class="primary">重新生成任务</button><button id="dashboardToggleLock">锁定计划</button><button id="addTask">新增</button></div></div>
+            <div id="generationStatus" class="generation-status" role="status" aria-live="polite" hidden></div>
+            <div id="taskList" class="task-list"></div>
+          </div>
+          <div class="dash-side">
+            <div class="panel motivation-panel">
+              <div class="panel-head"><h3>执行反馈</h3><span class="hint">实时</span></div>
+              <div class="motivation-score"><small>积分</small><strong id="motivationPoints">0</strong><span id="motivationDelta">今日反馈</span></div>
+              <div class="streak-grid">
+                <div><small>连续完成</small><b id="motivationStreak">0</b><span>次</span></div>
+                <div><small>最佳连续</small><b id="motivationBest">0</b><span>次</span></div>
+              </div>
+              <div class="feedback-ledger" id="motivationHistory"></div>
+              <div class="recovery-box" id="motivationRecovery">
+                <small>补救行动</small>
+                <p>验收失败后，从一个最小可验证步骤重新开始。</p>
+                <button data-start-recovery>开始补救行动</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="settings">
+        <div class="panel full">
+          <div class="panel-head"><h3>目标与启动</h3><button class="primary" id="saveSettings">保存设置</button></div>
+          <label for="goalsText">目标列表（每行一个）</label>
+          <textarea id="goalsText" class="goal-box" spellcheck="false"></textarea>
+          <details class="privacy-box" open>
+            <summary>当前目标的完成定义</summary>
+            <div class="gen-settings">
+              <label>最终成果<input id="goalOutcome" placeholder="例如：发布可供 20 人稳定使用的产品"></label>
+              <label>目标日期<input id="goalDeadline" type="date"></label>
+              <label>当前基础<input id="goalBaseline" placeholder="目前已经做到什么"></label>
+              <label>成功标准（每行一条）<textarea id="goalCriteria" rows="3"></textarea></label>
+              <label>现实约束（每行一条）<textarea id="goalConstraints" rows="3"></textarea></label>
+            </div>
+            <p id="goalReadiness" class="hint"></p>
+          </details>
+          <div class="gen-settings">
+            <label>今日可用时间（分钟）<input id="genAvailableMinutes" type="number" min="30" max="600" step="15"></label>
+            <label>生成任务数<input id="genTaskCount" type="number" min="1" max="8" step="1"></label>
+            <label>单任务上限（分钟）<input id="genMaxTaskMinutes" type="number" min="10" max="180" step="5"></label>
+            <label>FSRS 目标记忆率<input id="desiredRetention" type="number" min="0.70" max="0.97" step="0.01"></label>
+            <label class="check"><input type="checkbox" id="genPreferContinuation"> 优先续接未完成任务</label>
+            <label class="check"><input type="checkbox" id="genForceOutput"> 每个任务必须有交付物和验收标准</label>
+            <label>专注模板
+              <select id="focusTemplate">
+                <option value="90">90 分钟（标准）</option>
+                <option value="50">50 分钟（高效）</option>
+                <option value="25">25 分钟（番茄钟）</option>
+              </select>
+            </label>
+          </div>
+          <div class="rule-tools">
+            <input id="quitReason" placeholder="任务未完成时退出原因">
+            <button id="quitApp">申请退出</button>
+          </div>
+          <label class="check"><input type="checkbox" id="autostart"> 开机自启动</label>
+          <label for="workspace">Agent 工作区</label>
+          <input id="workspace" placeholder="例如 D:\work\my-project">
+          <label for="deepseekKey">DeepSeek API Key <small id="deepseekStatus" style="margin-left:8px"></small></label>
+          <div class="rule-tools">
+            <input id="deepseekKey" type="password" placeholder="sk-...">
+            <button id="saveDeepseekKey">保存 Key</button>
+          </div>
+          <div id="crashNotice" class="crash-notice" style="display:none"></div>
+          <details class="privacy-box">
+            <summary>专注控制</summary>
+            <p class="hint">仅在当前任务的工作桌面应用之外进行渐进提醒。</p>
+            <label class="check"><input type="checkbox" id="focusGuardEnabled" checked> 启用专注控制</label>
+            <div class="rule-tools">
+              <button id="pauseFocus30">暂停专注 30 分钟</button>
+              <button id="clearFocusOverrides">清除应用例外</button>
+            </div>
+            <p id="focusStats" class="hint"></p>
+          </details>
+          <details class="privacy-box">
+            <summary>隐私控制</summary>
+            <p class="hint">控制哪些数据可以离开本机或进行精细记录。</p>
+            <label class="check"><input type="checkbox" id="privacyCloudAI" checked> 启用云 AI（关闭后所有 AI 功能使用离线兜底）</label>
+            <label class="check"><input type="checkbox" id="privacyUpload" checked> 允许上传交付物文件</label>
+            <label class="check"><input type="checkbox" id="privacyFG" checked> 精细前台标题记录（关闭后仅记录 exe 名）</label>
+            <label class="check"><input type="checkbox" id="privacyShareFG"> 允许云 AI 使用前台应用时间统计</label>
+            <label class="check"><input type="checkbox" id="privacyLogVerbose"> 诊断日志详尽模式（默认关闭）</label>
+          </details>
+          <details class="privacy-box">
+            <summary>隐私说明</summary>
+            <p class="hint">前台统计默认仅保存在本地 fgtime.json；只有开启"允许云 AI 使用前台应用时间统计"后才会随 AI 验收发送。可随时关闭或清除。</p>
+            <button id="exportData">导出本地数据</button>
+            <button id="clearFgData" class="danger">清除前台时间数据</button>
+          </details>
+        </div>
+      </section>
+      <section class="page" id="review">
+        <div id="reviewSummary" class="panel review-summary"></div>
+        <div class="grid">
+          <div class="panel"><div class="panel-head"><h3>退出记录</h3></div><div id="quitList" class="log-list"></div></div>
+          <div class="panel wide"><div class="panel-head"><h3>事件流</h3><button id="archiveToday">归档今日</button></div><div id="eventList" class="log-list"></div></div>
+          <div class="panel"><div class="panel-head"><h3>每日归档</h3></div><div id="archiveList" class="log-list"></div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

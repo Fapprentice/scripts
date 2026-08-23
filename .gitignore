@@ -1,0 +1,43 @@
+# Build artifacts
+dist/
+build/
+*.exe
+*.zip
+
+# Generated data
+task-verge.db
+task-verge.key
+*.pid
+task-panel.url
+task-panel.stop
+.env
+.uploads/
+task-config.json
+history.json
+fgtime.json
+
+# Local review / browser artifacts
+audit-ui/
+dogfood-output/
+_e2e_shots/
+ui-*-qa.png
+audit-*.png
+audit2-*.jpg
+ci-*.log
+restart-*.log
+_ui_*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Logs (keep structure, ignore content)
+boot.log*
+watchdog.log*
+crash.log
