@@ -1,5 +1,7 @@
 # UI 重建交付报告 — Task Verge Web 界面 token 化改造
 
+> 历史交付快照；其中行号、截图和测试数量不作为当前状态说明。
+
 日期: 2026-08-24 | 终审: reviewer (ui-rebuild) | 工作区: D:\work_S\scripts
 基线: UI_REVIEW_PROPOSAL.md（t1/t2/t3 三份审计汇总，2308 行 CSS / 1687 行 JS / 203 行 HTML）
 提交: **9a1d636955fdf0a51eb2f1ef9207d9e16cd765e6** feat(ui): tokenized redesign - visibility, motion language, a11y fixes（仅含 web/app.css + web/app.js）

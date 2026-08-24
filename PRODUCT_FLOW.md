@@ -4,16 +4,16 @@
 
 | 环节 | 成熟方案 | 当前实现与证据 |
 |---|---|---|
-| 1. 设定目标 | 一个目标对应独立状态、任务和用户模型 | 设置页目标列表；`norm_goals`、`ensure_goal_state` |
-| 2. 澄清目标 | 明确最终成果、期限、当前基础和现实约束；只追问缺失信息 | 设置页“当前目标的完成定义”；`goal_details`、`goal_readiness` |
+| 1. 设定目标 | 一个目标对应独立定义、状态、任务和用户模型 | 设置页目标卡片与详情面板；`norm_goals`、`ensure_goal_state` |
+| 2. 澄清目标 | 明确最终成果、期限、当前基础和现实约束；只追问缺失信息 | 每个目标的详情面板；`goal_details`、`goal_readiness` |
 | 3. 建立标准 | 成功标准使用多条可核验条件，生成任务不得覆盖 | `success_criteria` 持久化并进入生成提示 |
 | 4. 制定计划 | 根据里程碑、历史复盘、未完成项、容量生成阶段策略 | `build_task_prompt`、`task_generation`、`effective_gen_settings` |
-| 5. 生成任务 | 每项必须有动作、预计时长、交付物、验收标准和依赖 | `validate_ai_tasks`、`fit_task_budget`；无模型时本地模板兜底 |
+| 5. 生成任务 | 每项必须有动作、预计时长、交付物和验收标准；依赖特定输入时必须同时生成执行材料 | `validate_ai_tasks`、`ensure_task_materials`、`fit_task_budget`；无模型时本地模板兜底 |
 | 6. 执行监测 | 记录开始时间、尝试次数、实际耗时、前台应用和状态 | `/api/task-state`、`fgwatcher`、`record_task_outcome` |
 | 7. 收集反馈 | 支持太难、太简单、没时间、卡住、方向不对；同时收集被动信号 | 任务卡反馈按钮、`record_feedback`、`passive_review` |
 | 8. 判断反馈 | 用户陈述只是线索；综合尝试、耗时、验收、证据和来源计算可信度 | `assess_feedback`；低可信度只安排诊断动作 |
 | 9. 自动调整 | 高可信困难拆出最小步骤；时间不足顺延非核心项；方向变化必须确认 | `apply_decision`；原任务验收标准保持不变 |
-| 10. 提交证据 | 支持多文件，限制大小、隔离目录并保留任务关联 | `/api/upload-evidence`、`task-evidence-list` |
+| 10. 提交证据 | 外部成果支持多文件上传；材料型任务支持页面作答并保存为任务响应 | `/api/upload-evidence`、`/api/task-response`、`task-evidence-list` |
 | 11. 验收 | 先跑确定性规则，再对无法确定的内容调用模型；无证据不得通过 | `acceptance.py`、`cli_eval` |
 | 12. 复盘 | 汇总完成率、验收率、耗时偏差、常见阻力和主要应用 | `complete_review`、`daily_archive`、复盘页 |
 | 13. 更新用户模型 | 更新容量系数、合适任务时长、常见阻力和反馈可信度，按目标隔离 | `user_model`、`user_models_by_goal` |

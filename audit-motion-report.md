@@ -1,5 +1,7 @@
 # Task Verge — 动效与动画审计报告
 
+> 历史审计快照；部分问题已经修复，当前实现以 `web/app.css` 和 `web/app.js` 为准。
+
 审计人：motion-engineer（动效工程师）｜审计对象：D:\work_S\scripts\web\app.css（2308 行）、app.js（1687 行）、index.html + ui-mission-control-qa.png
 审计标准：顶级动效设计（时长 150–300ms、一致缓动语言、微交互质感、性能、prefers-reduced-motion）
 

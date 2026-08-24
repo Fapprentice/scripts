@@ -1,5 +1,7 @@
 # Task Verge — 顶级审美 UI 改进方案
 
+> 历史改进提案；部分事项已经实现，当前界面规范以 `README.md` 和实际代码为准。
+
 > 汇总自三份审计：t1 视觉设计审计（ui-designer）、t2 动效与动画审计（motion-engineer）、t3 前端实现与可用性审计（frontend-reviewer）。
 > 基准代码：`web/app.css`（2308 行）、`web/app.js`（1687 行）、`web/index.html`（203 行）。
 > 原则：去重、冲突时以**视觉一致性**为准；每条给出可直接落地的参数与变量命名。

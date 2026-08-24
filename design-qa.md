@@ -1,5 +1,7 @@
 # Design QA
 
+> 历史 UI 验证记录；当前界面与验证结果以实际代码和最新测试为准。
+
 - Source visual truth: `C:\Users\lianyue\AppData\Local\Temp\codex-clipboard-d052e843-6457-4441-ac82-257a40d94113.png`
 - Implementation evidence: in-app Browser capture, Task Verge focus state
 - Viewports: 1280x720 desktop; 390x844 mobile

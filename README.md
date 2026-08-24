@@ -1,6 +1,6 @@
 # Task Verge
 
-Windows-only local task focus panel with AI coach, AI acceptance, and desktop app launcher.
+Windows-only local execution system that turns personal goals into measurable tasks, supplies required task materials, tracks focused work, and validates outcomes.
 
 The product loop is: define and clarify a goal → establish measurable standards → plan and generate tasks → monitor execution → judge active and passive feedback → adjust without silently lowering the final standard → collect evidence → accept → review → update the per-goal user model → generate the next cycle. See `PRODUCT_FLOW.md` for the behavior contract.
 
@@ -13,7 +13,9 @@ The product loop is: define and clarify a goal → establish measurable standard
 
 ## Features
 
+- **Per-goal definitions**: every goal keeps its own final outcome, deadline, baseline, measurable success criteria, and real-world constraints
 - **AI task generation**: goal-aware structured tasks with expected output and acceptance criteria, generated daily
+- **Executable task materials**: quizzes, passages, listening scripts, prompts, and other required inputs are attached to the task and completed in a popup panel
 - **AI acceptance**: upload deliverables → AI reads file contents, runs `py_compile` + Docker sandbox, returns pass/fail with missing items and next steps
 - **AI coach**: chat-based suggestions (reschedule, regenerate, archive) backed by automatic insight cards (low completion, focus drift, missing evidence)
 - **AI app recognition**: two-stage (categories → specific apps) identification of task-relevant applications for a visual "work desktop"
@@ -24,6 +26,8 @@ The product loop is: define and clarify a goal → establish measurable standard
 - **Privacy gate**: foreground-window tracking starts only after explicit consent; disabling detailed titles records only the executable name
 - **Agent workspace**: file and command tools are restricted to the existing directory selected in Settings
 - **Multi-goal isolation**: each goal gets independent tasks, apps, completion percentage, and catalog
+- **Learning loop**: FSRS review scheduling, recall-quality feedback, ability diagnostics, and a per-goal knowledge graph
+- **Review view**: daily summary, knowledge graph, current-month execution heatmap with access to the most recent 12 months, and popup history logs
 - **Crash recovery**: detects unclean exit on next launch and warns the user
 - **Single instance**: PID file + Windows Mutex dual guard; duplicate startups focus or reopen the existing window
 - **Backend session lock**: `X-Session` token (8s TTL) prevents concurrent writes from multiple browser tabs
@@ -58,6 +62,12 @@ The product loop is: define and clarify a goal → establish measurable standard
 - `%LOCALAPPDATA%\TaskVerge\boot.log`: startup diagnostics log
 - `%LOCALAPPDATA%\TaskVerge\watchdog.log`: start/stop/error log
 - `%LOCALAPPDATA%\TaskVerge\task-verge.key`: current-user DPAPI-encrypted DeepSeek key (never written to `.env`)
+
+## Main views
+
+- **今日执行**: current task, timer, task-material entry, evidence upload, acceptance, and execution feedback
+- **记录**: review summary, knowledge graph, monthly heatmap, archives, event stream, and exit history
+- **设置**: goal cards and per-goal definitions; infrequently changed runtime, focus, privacy, workspace, and API settings stay in popup panels
 
 ## Notes
 

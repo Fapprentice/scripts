@@ -1,4 +1,6 @@
-# Task Verge 项目调查最终报告
+# Task Verge 项目调查最终报告（历史快照）
+
+> **状态说明（2026-08-24）**：本文保留当时的调查证据，不再代表当前仓库状态。当前仓库已推送至 `https://github.com/Fapprentice/scripts.git`，`main` 当前包含提交 `27b1509`；现行运行与架构说明以 `README.md`、`PRODUCT_FLOW.md` 和 `CODE_WIKI.md` 为准。
 
 > 汇总来源：researcher（t1 项目结构与用途调查）、engineer（t2 git 状态与 GitHub 痕迹检查、t3 GitHub 仓库定位），reviewer（t4）复核关键证据后成稿。
 > 调查对象：`D:\work_S\scripts` 本地仓库（Windows 环境，工作区干净，分支 main）。
