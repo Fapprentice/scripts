@@ -257,7 +257,7 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus {
   border-color: var(--mc-primary);
-  box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.12);
+  box-shadow: 0 0 0 3px var(--mc-primary-soft);
 }
 
 textarea {
@@ -267,6 +267,18 @@ textarea {
   line-height: 1.55;
 }
 .goal-box { min-height: 140px; }
+
+/* A2 — 设置页主目标输入区质感：加高、加圆角、hover/focus 反馈（全部 token） */
+#settings .goal-box {
+  min-height: 200px;
+  padding: var(--sp-3) var(--sp-4);
+  line-height: 1.6;
+  border-radius: var(--r-lg);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+#settings .goal-box:hover { border-color: var(--mc-muted-2); box-shadow: var(--shadow-sm); }
+#settings .goal-box:focus { border-color: var(--mc-primary); box-shadow: 0 0 0 3px var(--mc-primary-soft); }
 
 label {
   display: block;
@@ -278,13 +290,26 @@ label {
 .check { display: flex; gap: var(--sp-2); align-items: center; color: var(--mc-text); font-size: var(--fs-xs); }
 .check input { accent-color: var(--mc-primary); }
 
+/* A7 — 设置 checkbox 行可点感：行距收紧 + hover 底色（.check 仅设置页使用） */
+.check {
+  margin: var(--sp-1) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.check:hover { background: var(--mc-primary-soft); }
+
+/* A8 — 工具行右对齐：flex 替代 grid（grid 三列但实际仅 1-2 子项，按钮落空列不贴右） */
 .rule-tools {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
   margin: var(--sp-4) 0;
 }
-.rule-tools input { min-width: 0; }
+.rule-tools input { flex: 1 1 220px; min-width: 0; }
+.rule-tools button { margin-left: auto; }
+.rule-tools button + button { margin-left: var(--sp-2); }
 
 /* ============================================================
    4. Shell layout — sidebar + scrollable main (P0 fix)
@@ -1150,6 +1175,16 @@ label {
    ============================================================ */
 #settings > .panel { width: 100%; max-width: none; margin: 0; padding-bottom: var(--sp-12); box-sizing: border-box; }
 
+/* A1 — 设置页 panel 静态化：工作页不需要"卡片漂浮" hover */
+#settings > .panel { transition: none; }
+#settings > .panel:hover { transform: none; box-shadow: var(--shadow-sm); }
+
+/* A10-2 — 设置页输入框凹陷底色（light/dark 两主题一致的输入对比） */
+#settings input, #settings select, #settings textarea,
+.advanced-settings-body input, .advanced-settings-body select, .advanced-settings-body textarea {
+  background: var(--mc-canvas);
+}
+
 .settings-entry {
   display: flex;
   justify-content: space-between;
@@ -1165,7 +1200,38 @@ label {
 }
 .settings-entry span { color: var(--mc-muted); font-size: var(--fs-xs); font-weight: 500; }
 
-.advanced-settings-modal { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 42, 0.46); }
+/* A6 — 设置行化：左 accent + hover 反馈 + 按压微缩
+   （左 accent 占首个 flex 位，space-between 会把标题挤到中间，
+    故改 flex-start + span 自顶右，保持标题左对齐） */
+.settings-entry {
+  text-align: left;
+  justify-content: flex-start;
+  border-radius: var(--r-lg);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+.settings-entry span { margin-left: auto; }
+.settings-entry::before {
+  content: "";
+  width: 3px; height: 22px; flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  background: var(--mc-primary);
+  opacity: 0;
+  margin-right: var(--sp-3);
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.settings-entry:hover { border-color: var(--mc-primary); background: var(--mc-primary-soft); box-shadow: var(--shadow-sm); }
+.settings-entry:hover::before { opacity: 1; }
+.settings-entry:active { transform: scale(0.99); }
+
+.advanced-settings-modal {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px;
+  background: rgba(15, 23, 42, 0.46);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: overlayIn var(--dur-fast) var(--ease-out);
+}
 .advanced-settings-dialog {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1176,33 +1242,74 @@ label {
   background: var(--mc-panel);
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
   overflow: hidden;
+  animation: modalIn var(--dur-base) var(--ease-out);
 }
 .advanced-settings-dialog > header { display: flex; justify-content: space-between; align-items: flex-start; padding: 18px 24px; border-bottom: 1px solid var(--mc-border); }
 .advanced-settings-dialog h2 { margin: 0; color: var(--mc-text); font-size: var(--fs-lg); }
 .advanced-settings-dialog header p { margin: 5px 0 0; color: var(--mc-muted); font-size: var(--fs-xs); }
 .advanced-settings-dialog header button { width: 36px; height: 36px; padding: 0; border: 0; color: var(--mc-muted); background: transparent; font-size: 25px; }
+
+/* A9 — 模态关闭按钮 hover 反馈 */
+.advanced-settings-dialog header button {
+  border-radius: var(--r-md);
+  transition: color var(--dur-fast) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out);
+}
+.advanced-settings-dialog header button:hover { color: var(--mc-text); background: var(--mc-primary-soft); }
 .advanced-settings-body { padding: 20px 24px; overflow: auto; }
 .advanced-settings-dialog > footer { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 24px; border-top: 1px solid var(--mc-border); }
 .advanced-settings-dialog > footer button { min-width: 110px; }
 
 .gen-settings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-4) var(--sp-3);
   margin: var(--sp-4) 0;
   padding: var(--sp-4) 18px;
   border: 1px solid var(--mc-border);
   border-radius: var(--r-lg);
   background: var(--mc-panel);
 }
-.gen-settings label { display: grid; gap: 6px; color: var(--mc-muted); font-size: var(--fs-2xs); }
+.gen-settings label { display: grid; gap: 6px; margin: 0; color: var(--mc-muted); font-size: var(--fs-2xs); }
+.gen-settings label:has(textarea) { grid-column: 1 / -1; }
 .gen-settings textarea { min-height: 120px; }
 .gen-settings input[type="number"] { min-width: 0; }
 .gen-settings .check { display: flex; align-items: center; gap: var(--sp-2); color: var(--mc-text); font-size: var(--fs-xs); }
 
 .privacy-box { margin-top: var(--sp-5); border: 1px solid var(--mc-border); background: var(--mc-panel); border-radius: var(--r-lg); padding: 16px 20px; }
-.privacy-box summary { cursor: pointer; color: var(--mc-text); font-weight: 700; }
+
+/* A4 — privacy summary：去原生三角、自定义 chevron、hover/展开态反馈（全部 token） */
+.privacy-box summary {
+  cursor: pointer; color: var(--mc-text); font-weight: 700;
+  list-style: none;
+  display: flex; align-items: center; gap: var(--sp-2);
+}
+.privacy-box summary::-webkit-details-marker { display: none; }
+.privacy-box summary::after {
+  content: "";
+  width: 7px; height: 7px; margin-left: auto; flex: 0 0 auto;
+  border-right: 2px solid var(--mc-muted-2);
+  border-bottom: 2px solid var(--mc-muted-2);
+  transform: rotate(45deg);
+  transition: transform var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+.privacy-box[open] summary::after { transform: rotate(-135deg); }
+.privacy-box summary:hover { color: var(--mc-primary); }
+.privacy-box summary:hover::after { border-right-color: var(--mc-primary); border-bottom-color: var(--mc-primary); }
+.privacy-box[open] summary {
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--mc-border);
+}
+.privacy-box[open] { border-color: var(--mc-muted-2); }
 .privacy-box .hint { margin: var(--sp-3) 0; }
+
+/* A5 — 主页面"完成定义"去嵌套盒子（模态内 gen-settings 保留卡片框） */
+#settings > .panel .privacy-box .gen-settings {
+  border: 0; background: transparent; border-radius: 0;
+  margin: var(--sp-2) 0 0; padding: var(--sp-3) 0 0;
+}
 
 /* ============================================================
    14. Modal / exit overlay / toast
