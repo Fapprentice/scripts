@@ -11,12 +11,144 @@ const $ = (s, ctx) => (ctx||document).querySelector(s);
 const $$ = (s, ctx) => [...(ctx||document).querySelectorAll(s)];
 const pageTitles = {
   dashboard:['总览','今日专注、任务完成度与前台时间。'],
-  rules:['应用分类','管理 AI 应用分类与工作桌面归属。'],
   review:['复盘','退出记录、事件流与每日归档。'],
   settings:['设置','目标、生成参数、休息与退出。']
 };
 const runNames = {generate:'生成任务', evaluate:'AI 验收'};
-function setModalOpen(modal, open){ modal.hidden=!open; document.body.classList.toggle('modal-open', open); }
+// ---- motion & a11y helpers (JS wiring for CSS classes provided in app.css) ----
+const reducedMotionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+function prefersReducedMotion(){ return !!(reducedMotionQuery && reducedMotionQuery.matches); }
+function scrollIntoViewSafe(el, opts={}){
+  if(!el) return;
+  el.scrollIntoView({behavior: prefersReducedMotion() ? 'auto' : 'smooth', ...opts});
+}
+let _pageSwitchGen = 0, _pageSwitchTimer = null;
+function switchPage(page){
+  if(page===activePage) return;
+  const next = document.getElementById(page);
+  if(!next) return;
+  const old = document.querySelector('.page.active');
+  const gen = ++_pageSwitchGen;
+  const done = () => {
+    if(gen !== _pageSwitchGen) return;          // superseded by a newer switch
+    if(_pageSwitchTimer){ clearTimeout(_pageSwitchTimer); _pageSwitchTimer=null; }
+    if(old) old.classList.remove('active','page-leaving');
+    $$('.page').forEach(x=>x.classList.remove('active'));
+    next.classList.add('active');               // CSS pageIn plays on .page.active
+    setPage(page);
+    activePage = page;
+    document.body.classList.remove('focus-active');
+    if(page==='dashboard') refreshLive();
+  };
+  if(!old || old===next || prefersReducedMotion()){ done(); return; }
+  old.classList.add('page-leaving');            // CSS pageOut animation
+  const onEnd = e => { if(e && e.target!==old) return; old.removeEventListener('animationend', onEnd); done(); };
+  old.addEventListener('animationend', onEnd);
+  _pageSwitchTimer = setTimeout(done, 180);     // fallback if animationend never fires
+}
+// ---- unified modal base: role/aria + initial focus + Esc + focus trap + .modal-leaving exit ----
+const _openModals = new Set();
+let _lastFocusBeforeModal = null;
+function modalFocusables(modal){
+  return [...modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+}
+function setBackgroundInert(on){
+  const shell = document.querySelector('.shell');
+  if(!shell) return;
+  if('inert' in shell) shell.inert = on;
+  else if(on) shell.setAttribute('aria-hidden','true');
+  else shell.removeAttribute('aria-hidden');
+}
+function openModal(modal){
+  if(!modal || _openModals.has(modal)) return;
+  if(!_openModals.size && !modal.closest('.shell')){ _lastFocusBeforeModal = document.activeElement; setBackgroundInert(true); }
+  _openModals.add(modal);
+  modal.hidden = false;
+  modal.style.display = 'flex';
+  modal.classList.remove('modal-leaving');
+  document.body.classList.add('modal-open');
+  modal.setAttribute('role','dialog');
+  modal.setAttribute('aria-modal','true');
+  const titleEl = modal.querySelector('.modal-title') || modal.querySelector('h2') || modal.querySelector('h3');
+  if(titleEl){
+    if(!titleEl.id) titleEl.id = 'modal-title-' + Math.random().toString(36).slice(2,8);
+    modal.setAttribute('aria-labelledby', titleEl.id);
+  }
+  const first = modalFocusables(modal)[0];
+  if(first) first.focus();
+}
+function closeModal(modal){
+  if(!modal || !_openModals.has(modal)) return;
+  _openModals.delete(modal);
+  if(modal.dataset.closing) return;
+  modal.dataset.closing = '1';
+  const done = () => {
+    delete modal.dataset.closing;
+    modal.classList.remove('modal-leaving');
+    modal.hidden = true;
+    modal.style.display = 'none';
+    if(!_openModals.size){
+      document.body.classList.remove('modal-open');
+      setBackgroundInert(false);
+      if(_lastFocusBeforeModal && _lastFocusBeforeModal.focus) _lastFocusBeforeModal.focus();
+      _lastFocusBeforeModal = null;
+    }
+  };
+  if(prefersReducedMotion()){ done(); return; }
+  modal.classList.add('modal-leaving');         // CSS modalOut animation
+  const onEnd = e => { if(e && e.target!==modal) return; modal.removeEventListener('animationend', onEnd); done(); };
+  modal.addEventListener('animationend', onEnd);
+  setTimeout(done, 180);
+}
+function setModalOpen(modal, open){ open ? openModal(modal) : closeModal(modal); }
+// ---- 400ms count-up for numbers (points / streak / completion %) ----
+function countTo(el, to, suffix=''){
+  if(!el) return;
+  const target = Number(to) || 0;
+  if(prefersReducedMotion()){ el.textContent = target + suffix; return; }
+  const from = parseFloat(String(el.textContent).replace(/[^\d.\-]/g,'')) || 0;
+  if(from === target){ el.textContent = target + suffix; return; }
+  const t0 = performance.now();
+  const tick = t => {
+    const p = Math.min(1, (t - t0) / 400);
+    const eased = 1 - Math.pow(1 - p, 3);       // ease-out cubic (one-shot easing)
+    el.textContent = Math.round(from + (target - from) * eased) + suffix;
+    if(p < 1) requestAnimationFrame(tick);
+    else el.textContent = target + suffix;
+  };
+  requestAnimationFrame(tick);
+}
+// ---- task list motion: stagger index + FLIP position preservation ----
+function staggerTasks(){
+  $$('#taskList .task').forEach((el,i)=>el.style.setProperty('--i', String(Math.min(i,8))));
+}
+function captureTaskRects(){
+  const map = new Map();
+  $$('#taskList .task').forEach(el=>{
+    const key = el.querySelector('.task-title')?.textContent || el.textContent.slice(0,40);
+    const rect = el.getBoundingClientRect();
+    map.set(key, {top:rect.top, left:rect.left});
+  });
+  return map;
+}
+function flipTasks(before){
+  if(!before || !before.size || prefersReducedMotion()) return;
+  $$('#taskList .task').forEach(el=>{
+    const key = el.querySelector('.task-title')?.textContent || el.textContent.slice(0,40);
+    const prev = before.get(key);
+    if(!prev) return;                            // new row -> stagger entrance instead
+    const rect = el.getBoundingClientRect();
+    const dx = prev.left - rect.left, dy = prev.top - rect.top;
+    if(!dx && !dy) return;
+    el.style.transition = 'none';
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    requestAnimationFrame(()=>{
+      el.style.transition = '';
+      el.style.transform = '';
+    });
+  });
+}
 async function api(path, body){
   if(!sessionToken && !await ensureSession()) throw new Error('无法建立本地会话');
   const opt = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
@@ -114,13 +246,13 @@ function showModal(title, msg, kind='error'){
     </div>`;
     document.body.appendChild(m);
     m.addEventListener('click', e=>{
-      if(e.target===m || e.target.classList.contains('modal-ok')) m.style.display='none';
+      if(e.target===m || e.target.classList.contains('modal-ok')) closeModal(m);
     });
   }
   $('.modal-title', m).textContent = title;
   $('.modal-title', m).className = 'modal-title ' + kind;
   $('.modal-msg', m).textContent = msg;
-  m.style.display = 'flex';
+  openModal(m);
 }
 function setPage(page){
   const t = pageTitles[page] || [page, ''];
@@ -148,16 +280,15 @@ function askEvidence(){
         <div class="modal-actions"><button data-evidence-cancel>取消</button><button class="primary" data-evidence-ok>提交</button></div>
       </div>`;
       document.body.appendChild(m);
+      m.addEventListener('click', e=>{
+        if(e.target.dataset.evidenceOk!==undefined){ const v=$('.modal-input',m).value.trim(); closeModal(m); resolve(v); }
+        else if(e.target.dataset.evidenceCancel!==undefined || e.target===m){ closeModal(m); resolve(''); }
+      });
     }
     const input = $('.modal-input', m);
     input.value = '';
-    m.style.display = 'flex';
+    openModal(m);
     input.focus();
-    const done = v => { m.style.display='none'; m.onclick=null; resolve(v); };
-    m.onclick = e => {
-      if(e.target.dataset.evidenceOk!==undefined) done(input.value.trim());
-      if(e.target.dataset.evidenceCancel!==undefined || e.target===m) done('');
-    };
   });
 }
 function confirmDlg(msg, title='请确认'){
@@ -170,10 +301,13 @@ function promptDlg(message, initial=''){
       m=document.createElement('div'); m.id='textPrompt'; m.className='modal-overlay';
       m.innerHTML='<div class="modal-box"><h3 class="modal-title">请输入</h3><p class="modal-msg"></p><input class="modal-input"><div class="modal-actions"><button data-cancel>取消</button><button class="primary" data-ok>确定</button></div></div>';
       document.body.appendChild(m);
+      m.addEventListener('click', e=>{
+        if(e.target.dataset.ok!==undefined){ const v=$('.modal-input',m).value.trim(); closeModal(m); resolve(v); }
+        else if(e.target.dataset.cancel!==undefined || e.target===m){ closeModal(m); resolve(''); }
+      });
     }
-    $('.modal-msg',m).textContent=message; const input=$('.modal-input',m); input.value=initial; m.style.display='flex'; input.focus();
-    const done=v=>{m.style.display='none'; m.onclick=null; resolve(v)};
-    m.onclick=e=>{if(e.target.dataset.ok!==undefined) done(input.value.trim()); else if(e.target.dataset.cancel!==undefined||e.target===m) done('')};
+    $('.modal-msg',m).textContent=message; const input=$('.modal-input',m); input.value=initial;
+    openModal(m); input.focus();
   });
 }
 function showExitScreen(){
@@ -187,7 +321,7 @@ function showExitScreen(){
       <button id="exitDefer">延期到下一个时间块</button>
       <button id="exitQuit" class="danger">标记中断并退出</button>
     </div>
-    <textarea id="exitReason" placeholder="可选：填写中断原因..." rows="2" style="width:100%;margin-top:12px;background:var(--card-bg, #161b22);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius);padding:8px;font:inherit;resize:none"></textarea>
+    <textarea id="exitReason" placeholder="可选：填写中断原因..." rows="2" style="width:100%;margin-top:12px;background:var(--mc-panel);color:var(--mc-text);border:1px solid var(--border);border-radius:var(--radius);padding:8px;font:inherit;resize:none"></textarea>
     <small class="hint" style="margin-top:8px;display:block">提示：托盘图标的退出功能已改为打开此页面</small>
   </div>`;
   document.body.appendChild(div);
@@ -219,24 +353,25 @@ function showExitScreen(){
     setTimeout(() => { if(!document.hidden) window.close(); }, 2000);
   });
 }
-let _toastTimer = null;
+// Independent fixed toast container (no longer overwrites the hero #statusPill).
 function toast(msg, good=true){
-  $('#statusPill').textContent = msg;
-  $('#statusPill').style.color = good ? 'var(--accent)' : 'var(--bad)';
-  $('#statusPill').classList.remove('toast-pulse'); void $('#statusPill').offsetWidth; $('#statusPill').classList.add('toast-pulse');
-  if(_toastTimer) clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(()=>{
-    if((state?.tasks||[]).some(t=>!t.done && t.status==='doing')){
-      $('#statusPill').textContent = '专注中';
-      $('#statusPill').style.color = 'var(--accent)';
-    } else if(state && state.break_active){
-      $('#statusPill').textContent = '休息中';
-      $('#statusPill').style.color = 'var(--warn)';
-    } else {
-      $('#statusPill').textContent = '就绪';
-      $('#statusPill').style.color = 'var(--accent)';
-    }
-  }, 4000);
+  let host = $('#toastHost');
+  if(!host){
+    host = document.createElement('div');
+    host.id = 'toastHost';
+    host.className = 'toast-host';
+    host.setAttribute('aria-live','polite');
+    host.setAttribute('role','status');
+    host.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10000;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.className = 'toast ' + (good ? 'toast-ok' : 'toast-err');
+  el.textContent = msg;
+  el.style.cssText = 'padding:10px 18px;border-radius:10px;background:#1f2937;color:#fff;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:80vw;transition:opacity .3s ease,transform .3s ease';
+  if(!good) el.style.background = '#b42318';
+  host.appendChild(el);
+  setTimeout(()=>{ el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; setTimeout(()=>el.remove(), 320); }, 3500);
 }
 function renderOnboarding(){
   let banner = $('#onboarding');
@@ -291,7 +426,6 @@ function render(){
   $('#dashboard')?.classList.toggle('focus-first', !!(state.tasks||[]).some(t=>!t.done && t.status!=='skipped'));
   const hasGoal = !!(state.goal && state.goal !== '[object Object]' && String(state.goal).trim());
   $('#goal').textContent = state.goal || '尚未设置目标';
-  if($('#goalSelect')) $('#goalSelect').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   if($('#goalSelectTop')) $('#goalSelectTop').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   $('#goalsText').value = (state.goals && state.goals.length ? state.goals : (state.goal ? [state.goal] : [])).join('\n');
   const gd=state.goal_details||{};
@@ -305,14 +439,10 @@ function render(){
     $('#goalReadiness').textContent=gr.ready?'目标定义完整，可以制定计划。':`目标定义 ${gr.score||0}%：${(gr.questions||[]).join(' ')}`;
     $('#goalReadiness').style.color=gr.ready?'var(--good)':'var(--warn)';
   }
-  $('#pct').textContent = Math.round(state.completion_pct||0)+'%';
+  countTo($('#pct'), Math.round(state.completion_pct||0), '%');
   const motivation=state.motivation||{};
   $('#pct').title=`积分 ${motivation.points||0} · 连续完成 ${motivation.streak||0} 次`;
-  if($('#motivationPoints')) $('#motivationPoints').textContent=motivation.points||0;
-  if($('#motivationStreak')) $('#motivationStreak').textContent=motivation.streak||0;
-  if($('#motivationBest')) $('#motivationBest').textContent=motivation.best_streak||0;
-  if($('#motivationHistory')) $('#motivationHistory').innerHTML=(motivation.history||[]).slice(-4).reverse().map(x=>`<div class="ledger-row ${Number(x.points)>=0?'positive':'negative'}"><b>${Number(x.points)>=0?'+':''}${x.points||0}</b><span>${escapeHtml(({accepted:'验收通过',partial:'部分完成',skipped:'跳过任务',failed:'验收失败'}[x.outcome]||x.outcome||'反馈'))}</span></div>`).join('')||'<p class="hint">完成任务后显示反馈记录</p>';
-  if($('#motivationRecovery')) $('#motivationRecovery').hidden=!(state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
+  renderMotivationScore();
   $('#progressArc').style.strokeDashoffset = 314 - 314*Math.max(0,Math.min(100,state.completion_pct||0))/100;
   $('#focus').textContent = '前台：'+(state.focus||'--');
   $('#autostart').checked = !!state.autostart;
@@ -337,7 +467,6 @@ function render(){
   const guardStats = guard.stats || {};
   if($('#focusGuardEnabled')) $('#focusGuardEnabled').checked = guard.enabled !== false;
   if($('#focusStats')) $('#focusStats').textContent = `本次记录：分心 ${guardStats.distractions||0} 次 · ${formatDuration(guardStats.distraction_seconds||0)} · 关闭窗口 ${guardStats.closed_windows||0} 次 · 临时放行 ${guardStats.temporary_allows||0} 次`;
-  if($('#toggleLock')) $('#toggleLock').textContent = state.plan_locked ? '\u5df2\u9501\u5b9a' : '\u9501\u5b9a\u8ba1\u5212';
   if($('#dashboardToggleLock')) {
     $('#dashboardToggleLock').textContent = state.plan_locked ? '\u5df2\u9501\u5b9a' : '\u9501\u5b9a\u8ba1\u5212';
     $('#dashboardToggleLock').disabled = !(state.tasks || []).length;
@@ -363,12 +492,10 @@ function render(){
   }
   renderBreakWidget();
   renderOnboarding();
-  renderPrimaryAction();
   renderCurrentTaskBar();
   syncFocusStatusPill();
   renderSessionControls();
   renderRecoveryAction();
-  if($('#tasksText')) $('#tasksText').value = state.tasks.map(t=>t.text || t.title || '').join('\n');
   renderReview();
   renderGoalUnderstanding();
   // Skip taskList rebuild if a file picker was opened within the last 5s
@@ -376,19 +503,39 @@ function render(){
   const _hasFileSelected = $$('#taskList [data-evidence-file]').some(inp => inp.files && inp.files.length);
   const _skipTaskList = _hasFileSelected || Date.now() - _lastFilePickTs < 5000;
   if(!_skipTaskList){
+    const _beforeRects = captureTaskRects();
     $('#taskList').innerHTML = state.tasks.map(taskCard).join('') || '<p class="hint">还没有任务。</p>';
+    staggerTasks();
+    flipTasks(_beforeRects);
   }
   addTaskAdjustControls();
   renderCrashNotice();
   renderUndoAction();
   renderDailyWrap();
 }
+function renderMotivationScore(){
+  const motivation=state.motivation||{};
+  const pts=Number(motivation.points)||0;
+  const ptsEl=$('#motivationPoints');
+  if(ptsEl){
+    countTo(ptsEl, pts);
+    // semantic color: negative→red (.negative), positive→green (.positive), 0→neutral (no class)
+    ptsEl.classList.remove('negative','positive');
+    if(pts<0) ptsEl.classList.add('negative');
+    else if(pts>0) ptsEl.classList.add('positive');
+  }
+  if($('#motivationStreak')) countTo($('#motivationStreak'), Number(motivation.streak)||0);
+  if($('#motivationBest')) countTo($('#motivationBest'), Number(motivation.best_streak)||0);
+  if($('#motivationHistory')) $('#motivationHistory').innerHTML=(motivation.history||[]).slice(-4).reverse().map(x=>`<div class="ledger-row ${Number(x.points)>=0?'positive':'negative'}"><b>${Number(x.points)>=0?'+':''}${x.points||0}</b><span>${escapeHtml(({accepted:'验收通过',partial:'部分完成',skipped:'跳过任务',failed:'验收失败'}[x.outcome]||x.outcome||'反馈'))}</span></div>`).join('')||'<p class="hint">完成任务后显示反馈记录</p>';
+  if($('#motivationRecovery')) $('#motivationRecovery').hidden=!(state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
+}
 
 function localizeShell(){
   const labels = {
     '.brand small':'专注执行系统',
     '.nav-item[data-page="dashboard"] span':'今日执行',
-    '.nav-item[data-page="review"] span':'复盘',
+    // note: [data-page="review"] span is intentionally renamed to '记录' at startup (see init block);
+    // localizeShell must NOT override it back to '复盘' on every render.
     '.nav-item[data-page="settings"] span':'设置',
     '#title':'今日执行',
     '#subtitle':'聚焦一个可验收结果，完成后立即获得反馈。',
@@ -453,47 +600,11 @@ function renderSessionControls(){
   if(!box){ box=document.createElement('div'); box.className='focus-first-actions'; bar.appendChild(box); }
   box.innerHTML=`<label class="upload-file-button focus-upload">${evidenceCount?`继续上传 · ${evidenceCount} 项`:'上传交付物'}<input data-evidence-file="${idx}" type="file" multiple></label><button data-session-action="pause" data-session-idx="${idx}">暂停任务</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">提交验收</button>`;
 }
-function renderFocusProfile(){
-  let box=$('#focusProfile'); if(!box){ box=document.createElement('div'); box.id='focusProfile'; box.className='panel focus-profile'; $('.dash-side')?.appendChild(box); }
-  const p=state.focus_profile||{}; const apps=Object.entries(p.top_apps||{}).map(([k,v])=>`${escapeHtml(k)} ${formatDuration(v)}`).join(' · ');
-  box.innerHTML=`<div class="panel-head"><h3>专注画像</h3><span class="hint">本地统计</span></div><p>历史平均完成 ${p.avg_completion||0}% · 已归档 ${p.archive_days||0} 天</p><p>累计分心 ${p.distractions||0} 次${apps?` · 常用：${apps}`:''}</p>${p.recommendation?`<p class="hint">建议：${escapeHtml(p.recommendation)}</p>`:''}`;
-}
-function renderPrimaryAction(){
-  const actions=$('.actions'); if(!actions) return;
-  let b=$('#primaryAction');
-  if(b) b.remove();
-}
-function legacyRenderCurrentTaskBar(){
-  let bar=$('#currentTaskBar');
-  const task=(state.tasks||[]).find(t=>!t.done && t.status==='doing') || (state.tasks||[]).find(t=>!t.done && t.status!=='skipped');
-  if(!task){ if(bar) bar.remove(); return; }
-  if(!bar){ bar=document.createElement('div'); bar.id='currentTaskBar'; bar.className='current-task-bar'; $('#dashboard').prepend(bar); }
-  const idx=(state.tasks||[]).indexOf(task);
-  const title = task.text || task.title || '未命名任务';
-  const next = task.next_action || '从这里开始';
-  const done = task.done_definition || task.expected_output || task.acceptance || '完成这一步并留下可继续的位置';
-  const goals=(state.goals||[]).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
-  const started=task.started_at ? new Date(task.started_at).getTime() : 0;
-  const elapsed=Math.max(0,Number(task.actual_seconds)||0)/60+(started&&task.status==='doing'?Math.max(0,(Date.now()-started)/60000):0);
-  const selector=task.status==='doing'?'':`<select id="goalSelect" class="focus-goal-select">${goals}</select>`;
-  const action=task.status==='doing'?'':`<button class="primary" data-start-task="${idx}">立即开始</button>`;
-  bar.innerHTML=`<div class="focus-first-copy">${selector}<small>${task.status==='doing'?`已投入 ${elapsed} 分钟`:'今天的主线任务'}</small><b>${escapeHtml(title)}</b><span>下一步：${escapeHtml(next)}</span><em>完成标准：${escapeHtml(done)}</em></div>${action}`;
-}
 function syncFocusStatusPill(){
   if(!focusStatusPill) focusStatusPill=$('#statusPill');
   if(!focusStatusPill) return;
   const target=$('.hero-copy');
   if(target && focusStatusPill.parentElement!==target) target.prepend(focusStatusPill);
-}
-function legacyRenderSessionControls(){
-  const bar=$('#currentTaskBar'), task=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
-  if(!bar || !task || task.status!=='doing') return;
-  let box=bar.querySelector('.focus-first-actions');
-  if(!box){ box=document.createElement('div'); box.className='focus-first-actions'; bar.appendChild(box); }
-  if(box.querySelector('[data-session-action]')) return;
-  const idx=(state.tasks||[]).indexOf(task);
-  const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
-  box.insertAdjacentHTML('beforeend', `<label class="upload-file-button focus-upload">${evidenceCount?`继续上传 · ${evidenceCount} 项`:'上传交付物'}<input data-evidence-file="${idx}" type="file" multiple></label><button data-session-action="pause" data-session-idx="${idx}">暂停任务</button><button data-session-action="partial" data-session-idx="${idx}">部分完成</button><button class="primary" data-ai-evaluate="${idx}">完成任务</button>`);
 }
 function renderRecoveryAction(){
   let box=$('#recoveryAction');
@@ -529,64 +640,6 @@ function renderUndoAction(){
     box=document.createElement('button'); box.id='undoAction'; box.className='hint'; box.textContent='\u64a4\u9500\u4e0a\u4e00\u6b21\u64cd\u4f5c';
     $('.actions')?.appendChild(box);
   }
-}
-function ensureCoachWorkspace(){
-  let box = $('#coachWorkspace');
-  if(box) return box;
-  box = document.createElement('div');
-  box.id = 'coachWorkspace';
-  box.className = 'coach-workspace';
-  box.innerHTML = `<div class="panel"><div class="panel-head"><h3>今日时间块</h3><button id="regenPlan">生成时间块</button></div><div id="timeBlocks" class="time-blocks"></div></div>
-    <div class="panel"><div class="panel-head"><h3>AI 教练</h3><button id="coachQuietToday">今天别再提醒</button></div><div id="coachMessages" class="coach-messages"></div><div id="coachAction" class="coach-action"></div><div class="coach-input"><input id="coachInput" placeholder="和教练对话，例如：把任务挪到下午"><button id="coachSend">发送</button></div></div>
-    <div class="panel full"><div class="panel-head"><h3>洞察卡</h3><span class="hint" style="margin:0">AI 根据专注数据自动生成</span></div><div id="insightCards" class="insight-cards"></div></div>`;
-  const dashSection = document.getElementById('dashboard');
-  dashSection.appendChild(box);
-  return box;
-}
-function renderCoachWorkspace(){
-  ensureCoachWorkspace();
-  renderTimeBlocks();
-  renderInsights();
-  renderCoachMessages();
-}
-function renderTimeBlocks(){
-  const box=$('#timeBlocks');
-  const blocks=state.time_blocks||[];
-  box.innerHTML = blocks.map(b=>`<div class="time-block ${b.type==='break'?'break':'task'}">
-    <b>${escapeHtml(b.start||'')} - ${escapeHtml(b.end||'')}</b>
-    <span>${escapeHtml(b.type==='break' ? '休息' : (b.title||'任务'))}</span>
-    ${b.reason ? `<small>${escapeHtml(b.reason)}</small>` : ''}
-  </div>`).join('') || '<p class="hint">还没有时间块，点击“生成时间块”。</p>';
-}
-function renderInsights(){
-  const box=$('#insightCards');
-  const alerts=state.insights?.alerts || [];
-  box.innerHTML = alerts.map(a=>{
-    const icons = {
-      good: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M7 10l2 2 4-4"/></svg>',
-      warn: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L18 17H2L10 3z"/><path d="M10 8v3"/><circle cx="10" cy="14" r="0.5" fill="currentColor"/></svg>',
-      error: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M7.5 7.5l5 5M12.5 7.5l-5 5"/></svg>',
-      info: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.5" fill="currentColor"/></svg>'
-    };
-    const icon = icons[a.level] || icons.info;
-    return `<div class="insight ${a.level||'info'}">
-    <div class="insight-icon">${icon}</div>
-    <div class="insight-body"><b>${escapeHtml(a.title||'洞察')}</b><p>${escapeHtml(a.message||'')}</p>
-    ${a.action ? `<button data-insight-chat="${escapeHtml(a.message||a.title||'')}">${escapeHtml(a.action)}</button>` : ''}
-    <button data-insight-ignore="${escapeHtml(a.id||'')}" class="hint" style="font-size:11px;margin-left:4px">忽略此项</button></div>
-  </div>`}).join('') || '<div class="insight-empty"><div class="insight-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/></svg></div><p>AI 会根据你的专注数据自动生成洞察</p><small>完成任务后，这里会出现个性化建议</small></div>';
-}
-function renderCoachMessages(){
-  const box=$('#coachMessages');
-  const messages=[...new Map((state.coach_messages||[]).map(m=>[`${m.role}|${m.text||''}`,m])).values()].slice(-8);
-  state.coach_messages=messages;
-  box.innerHTML=messages.map(m=>`<div class="coach-msg ${m.role==='user'?'user':'assistant'}"><b>${m.role==='user'?'我':'教练'}</b><p>${escapeHtml(m.text||'')}</p></div>`).join('') || '<p class="hint">教练会在这里解释计划、提出调整建议。</p>';
-}
-function renderCoachAction(action, reply=''){
-  const box=$('#coachAction');
-  if(!box || !action){ if(box) box.innerHTML=''; return; }
-  box.dataset.action=JSON.stringify(action);
-  box.innerHTML=`<div class="action-preview"><b>将执行</b><p>${escapeHtml(reply || action.type || '')}</p><button id="confirmCoachAction">确认</button><button id="cancelCoachAction">取消</button></div>`;
 }
 function renderGoalUnderstanding(){
   const list = $('#taskList');
@@ -815,112 +868,6 @@ async function uploadEvidenceFile(idx, input){
   if(ok) toast('交付物已保存');
   await load();
 }
-function renderTaskEditor(){
-  const list = $('#taskEditorList');
-  if(!list) return;
-  list.innerHTML = state.tasks.map((t,i)=>`<div class="task-edit-row">
-    <div class="task-index">${i+1}</div>
-    <div class="task-edit-main">
-      <input class="task-input" data-task-input="${i}" value="${escapeHtml(t.text || t.title || '')}" placeholder="输入任务标题">
-      <small>${escapeHtml([typeName(t.type), t.estimated_minutes ? `${t.estimated_minutes} 分钟` : '', t.expected_output ? `交付物：${t.expected_output}` : ''].filter(Boolean).join(' · '))}</small>
-    </div>
-    <button class="task-remove" data-remove-task="${i}">删除</button>
-  </div>`).join('') || '<p class="hint">还没有任务，点击“新增任务”开始。</p>';
-}
-function renderCatalog(){
-  const box = $('#catalogCards');
-  if(!box) return;
-  const cats = state.app_catalog?.categories || [];
-  box.innerHTML = cats.map(cat=>`<div class="catalog-group" data-catalog-group="${escapeHtml(cat.name||'')}">
-     <h4>${escapeHtml(cat.name||'未命名类别')} <button data-remove-catalog-category>删除大类</button></h4>
-    ${(cat.children||[]).map(ch=>`<div class="catalog-sub" data-catalog-row data-cat="${escapeHtml(cat.name||'')}" data-sub="${escapeHtml(ch.name||'')}">
-      <div class="catalog-sub-head"><b>${escapeHtml(ch.name||'未命名小类')}</b><span>${(ch.apps||[]).length} 个应用</span></div>
-      <div class="catalog-apps">${(ch.apps||[]).map(catalogAppChip).join('') || '<span class="hint">暂无应用 · AI 未识别到此类应用，可手动添加</span>'}</div>
-       <div class="catalog-add"><button data-open-catalog-picker>选择应用</button><button data-add-catalog-sub>新增小类</button><button data-remove-catalog-sub>删除小类</button></div>
-    </div>`).join('')}
-  </div>`).join('') || '<p class="hint">还没有 AI 分类。</p>';
-}
-function catalogAppChip(exe){
-  const app = allApps.find(a=>(a.exe||'').toLowerCase()===String(exe).toLowerCase());
-  return `<span class="catalog-app" data-catalog-app="${escapeHtml(exe)}">
-    <img src="${escapeHtml(app?.icon || '')}" onerror="this.style.display='none'">
-    <em>${escapeHtml(app?.name || exe)}</em>
-    <small>${escapeHtml(exe)}</small>
-    <button data-remove-catalog-app>移除</button>
-  </span>`;
-}
-function catalogFromEditor(){
-  const by = new Map();
-  $$('[data-catalog-row]').forEach(row=>{
-    const cat=row.dataset.cat;
-    const sub=row.dataset.sub;
-    const apps=$$('[data-catalog-app]', row).map(x=>x.dataset.catalogApp).filter(Boolean);
-    if(!cat || !sub) return;
-    if(!by.has(cat)) by.set(cat, []);
-    by.get(cat).push({name:sub, apps});
-  });
-  return {categories:[...by.entries()].map(([name,children])=>({name,children}))};
-}
-function renderCatalogPicker(row, q=''){
-  row.querySelector('.catalog-picker')?.remove();
-  const query=q.trim().toLowerCase();
-  const selected=new Set($$('[data-catalog-app]', row).map(x=>x.dataset.catalogApp.toLowerCase()));
-  const apps=allApps.filter(a=>{
-    const hay=[a.name,a.exe,a.title].join(' ').toLowerCase();
-    return !selected.has((a.exe||'').toLowerCase()) && (!query || hay.includes(query));
-  }).slice(0,80);
-  row.insertAdjacentHTML('beforeend', `<div class="catalog-picker">
-    <input data-catalog-search placeholder="搜索应用">
-    <div class="catalog-pick-list">${apps.map(a=>`<button data-pick-catalog-app="${escapeHtml(a.exe)}">
-      <img src="${escapeHtml(a.icon||'')}" onerror="this.style.display='none'">
-      <span>${escapeHtml(a.name||a.exe)}</span><small>${escapeHtml(a.exe)}</small>
-    </button>`).join('') || '<p class="hint">没有可添加的应用。</p>'}</div>
-  </div>`);
-  row.querySelector('[data-catalog-search]').value=q;
-  row.querySelector('[data-catalog-search]').focus();
-}
-function renderAppPicker(box, q=''){
-  const query=q.trim().toLowerCase();
-  const apps=usableApps.filter(a=>{
-    const hay=[a.name,a.exe,a.title].join(' ').toLowerCase();
-    return !query || hay.includes(query);
-  }).slice(0,100);
-  box.innerHTML = `<div class="catalog-picker">
-    <input data-request-search placeholder="搜索应用">
-    <div class="catalog-pick-list">${apps.map(a=>`<button data-request-pick="${escapeHtml(a.exe)}">
-      <img src="${escapeHtml(a.icon||'')}" onerror="this.style.display='none'">
-      <span>${escapeHtml(a.name||a.exe)}</span><small>${escapeHtml(a.exe)}</small>
-    </button>`).join('') || '<p class="hint">没有匹配的应用。</p>'}</div>
-  </div>`;
-  box.querySelector('[data-request-search]').value=q;
-  box.querySelector('[data-request-search]').focus();
-}
-function renderDesktop(){
-  if(!$('#desktopApps')) return;
-  const wanted = new Set([...(state.task_apps || []), ...(state.ai_task_apps || []), ...(state.manual_task_apps || [])].map(x=>x.toLowerCase()));
-  const aiApps = new Set((state.ai_task_apps || []).map(x=>x.toLowerCase()));
-  const manualApps = new Set((state.manual_task_apps || []).map(x=>x.toLowerCase()));
-  const apps = [...wanted].map(exe=>allApps.find(a=>(a.exe||'').toLowerCase()===exe) || {exe,name:exe,icon:''});
-  if(state.legacy_app_assignment) $('#desktopSource').textContent += ' · 旧版分配，可重新匹配';
-  $('#desktopSource').textContent = `分类${state.app_catalog_ready?'已完成':'生成中'} · AI ${state.ai_task_apps?.length||0} 个 · 手动 ${state.manual_task_apps?.length||0} 个`;
-  $('#desktopApps').innerHTML = apps.map(app=>{
-    const exeLower = (app.exe||'').toLowerCase();
-    const isAI = aiApps.has(exeLower) && !manualApps.has(exeLower);
-    const badge = isAI ? '<span class="app-badge ai" title="AI 自动识别">AI</span>' : '<span class="app-badge manual" title="手动添加">手</span>';
-    return `<button class="desktop-app" data-open-app="${escapeHtml(app.exe)}">
-    <img src="${escapeHtml(app.icon || '')}" onerror="this.style.display='none'">
-    <span>${escapeHtml(app.name || app.exe)}</span>
-    ${badge}
-    <i data-remove-desktop-app="${escapeHtml(app.exe)}" role="button" tabindex="0" title="从工作桌面移除">×</i>
-  </button>`;
-  }).join('') || '<p class="hint">还没有选择任务应用。去“应用分类”页勾选桌面显示。</p>';
-  $('#desktopTasks').innerHTML = state.tasks.map((t,i)=>`<span class="${t.done?'done':''}">${i+1}. ${escapeHtml(t.text || t.title || '')}</span>`).join('');
-}
-function editorTasks(){
-  const inputs = $$('[data-task-input]');
-  if(inputs.length) return inputs.map((x,i)=>({...state.tasks[i], text:x.value.trim(), title:x.value.trim()})).filter(x=>x.title);
-  return ($('#tasksText')?.value || '').split(/\n+/).map(x=>x.trim()).filter(Boolean).map(x=>({text:x,title:x}));
-}
 function formatFocusElapsed(task){
   const started=task.started_at?new Date(task.started_at).getTime():0;
   const accumulated=Number(task.actual_seconds)||0;
@@ -936,129 +883,6 @@ function updateClock(){
     timer.textContent=[Math.floor(seconds/3600),Math.floor(seconds%3600/60),seconds%60].map(x=>String(x).padStart(2,'0')).join(':');
   }
 }
-function drawHistory(){
-  const c = $('#historyChart'), x = c.getContext('2d'), h = state.history || [];
-  const W = c.width, H = c.height;
-  const pad = { top: 16, right: 12, bottom: 28, left: 36 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
-
-  x.clearRect(0, 0, W, H);
-
-  // Grid lines
-  x.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface-200').trim() || '#e5e5e7';
-  x.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = pad.top + (chartH / 4) * i;
-    x.beginPath();
-    x.moveTo(pad.left, y);
-    x.lineTo(W - pad.right, y);
-    x.stroke();
-  }
-
-  // Y-axis labels
-  x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
-  x.font = '10px "Inter", ui-sans-serif, sans-serif';
-  x.textAlign = 'right';
-  x.textBaseline = 'middle';
-  for (let i = 0; i <= 4; i++) {
-    const y = pad.top + (chartH / 4) * i;
-    const val = 100 - i * 25;
-    x.fillText(val + '%', pad.left - 6, y);
-  }
-
-  if (h.length < 2) {
-    x.textAlign = 'center';
-    x.textBaseline = 'middle';
-    x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
-    x.font = '13px "Inter", ui-sans-serif, sans-serif';
-    x.fillText('暂无足够数据', W / 2, H / 2 - 8);
-    x.font = '11px "Inter", ui-sans-serif, sans-serif';
-    x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted-light').trim() || '#a1a1aa';
-    x.fillText('至少完成 2 天后展示趋势', W / 2, H / 2 + 10);
-    return;
-  }
-
-  const data = h.slice(-10);
-  const stepX = data.length > 1 ? chartW / (data.length - 1) : chartW;
-
-  // Compute points
-  const points = data.map((d, i) => ({
-    x: pad.left + i * stepX,
-    y: pad.top + chartH - (Math.min(d.completion_pct || 0, 100) / 100) * chartH,
-    pct: d.completion_pct || 0,
-    label: d.date || ''
-  }));
-
-  // Area gradient fill
-  const grad = x.createLinearGradient(0, pad.top, 0, pad.top + chartH);
-  grad.addColorStop(0, 'rgba(99, 102, 241, 0.22)');
-  grad.addColorStop(0.6, 'rgba(99, 102, 241, 0.07)');
-  grad.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
-
-  // Draw smooth area
-  x.beginPath();
-  x.moveTo(points[0].x, pad.top + chartH);
-  x.lineTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const cpx = (prev.x + curr.x) / 2;
-    x.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
-  }
-  x.lineTo(points[points.length - 1].x, pad.top + chartH);
-  x.closePath();
-  x.fillStyle = grad;
-  x.fill();
-
-  // Draw smooth line
-  x.beginPath();
-  x.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const cpx = (prev.x + curr.x) / 2;
-    x.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
-  }
-  x.strokeStyle = '#6366f1';
-  x.lineWidth = 2.5;
-  x.lineCap = 'round';
-  x.lineJoin = 'round';
-  x.stroke();
-
-  // Data dots
-  points.forEach((p, i) => {
-    // Outer glow
-    x.beginPath();
-    x.arc(p.x, p.y, 5, 0, Math.PI * 2);
-    x.fillStyle = 'rgba(99, 102, 241, 0.15)';
-    x.fill();
-    // White ring
-    x.beginPath();
-    x.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
-    x.fillStyle = '#ffffff';
-    x.fill();
-    // Indigo center
-    x.beginPath();
-    x.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-    x.fillStyle = '#6366f1';
-    x.fill();
-  });
-
-  // X-axis date labels
-  x.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a';
-  x.font = '9px "Inter", ui-sans-serif, sans-serif';
-  x.textAlign = 'center';
-  x.textBaseline = 'top';
-  const labelStep = data.length > 7 ? 2 : 1;
-  points.forEach((p, i) => {
-    if (i % labelStep === 0 || i === points.length - 1) {
-      const d = data[i].date || '';
-      const short = d.length >= 5 ? d.slice(5) : d; // MM-DD
-      x.fillText(short, p.x, pad.top + chartH + 6);
-    }
-  });
-}
 function formatDuration(seconds){
   const s=Math.max(0,Math.round(Number(seconds)||0));
   if(s<60) return `${s}秒`;
@@ -1067,13 +891,42 @@ function formatDuration(seconds){
   if(h) return `${h}小时${m%60}分`;
   return `${m}分钟`;
 }
-function latestAppMatchEvent(events){
-  return [...(events||[])].reverse().find(x=>x.kind==='ai_apps'||x.kind==='ai_apps_failed');
-}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+let _lastSyncTs = 0;
+// Drive the topbar .sync-state indicator (classes: .synced/.syncing/.error — styled in app.css).
+function setSyncState(kind, detail){
+  const el=$('.sync-state');
+  if(!el) return;
+  el.classList.remove('synced','syncing','error');
+  if(kind) el.classList.add(kind);
+  const span=el.querySelector('span');
+  if(!span) return;
+  const small=span.querySelector('small');
+  const label = kind==='syncing' ? '同步中' : kind==='error' ? '同步失败' : '已同步';
+  if(small){
+    const first=span.firstChild;
+    if(!first || first.nodeType!==3 || first.textContent!==label) span.replaceChildren(label, small);
+    if(detail && small.textContent!==detail) small.textContent=detail;
+  } else if(span.textContent!==label){
+    span.textContent=label;
+  }
+}
+function syncErrorDetail(){
+  return _lastSyncTs ? Math.round((Date.now()-_lastSyncTs)/1000)+' 秒前' : '';
+}
 async function load(){
-  state = normalizeState(await api('state'));
+  setSyncState('syncing');
+  let stateData;
+  try{
+    stateData = normalizeState(await api('state'));
+  }catch(e){
+    setSyncState('error', syncErrorDetail());
+    throw e;
+  }
+  state = stateData;
   render();
+  setSyncState('synced','刚刚');
+  _lastSyncTs = Date.now();
   if(state.tasks?.length && !sessionStorage.getItem('taskVergeRecovered')){
     sessionStorage.setItem('taskVergeRecovered','1');
     toast(`\u5df2\u6062\u590d\u4eca\u65e5\u4efb\u52a1\uff0c\u5df2\u5b8c\u6210 ${state.tasks.filter(t=>t.done).length}/${state.tasks.length}`);
@@ -1095,9 +948,14 @@ async function refreshFg(){
     // Lightweight status refresh; foreground details are intentionally not exposed.
     $('#focus').textContent = '前台：'+(s.focus||'--');
     // update completion ring silently (completion_pct can change on eval)
-    $('#pct').textContent = Math.round(s.completion_pct||0)+'%';
+    countTo($('#pct'), Math.round(s.completion_pct||0), '%');
     $('#progressArc').style.strokeDashoffset = 314 - 314*Math.max(0,Math.min(100,s.completion_pct||0))/100;
-  }catch{}
+    setSyncState('synced','刚刚');
+    _lastSyncTs = Date.now();
+  }catch(e){
+    // Don't swallow poll failures — surface them in the sync indicator.
+    setSyncState('error', syncErrorDetail());
+  }
 }
 let _lastFullSyncTs = 0;
 function setGenerationUi(kind, message){
@@ -1113,11 +971,53 @@ function setGenerationUi(kind, message){
 async function refreshLive(){
   if(activePage!=='dashboard') return;
   await refreshFg();
-  // Full render every 30s to pick up task and acceptance changes.
+  // Every 30s refresh only task-status DOM instead of a full render()
+  // (keeps the file-picker guard; skips settings/goal/motivation fields).
   if(Date.now() - _lastFullSyncTs > 30000){
     _lastFullSyncTs = Date.now();
-    try{ state = normalizeState(await api('state')); render(); }catch{}
+    try{
+      state = normalizeState(await api('state'));
+      renderTasksLight();
+      setSyncState('synced','刚刚');
+      _lastSyncTs = Date.now();
+    }catch(e){
+      setSyncState('error', syncErrorDetail());
+    }
   }
+}
+// Lightweight task-status DOM refresh for the 30s poll (replaces the full render()).
+function renderTasksLight(){
+  $('#dashboard')?.classList.toggle('focus-first', !!(state.tasks||[]).some(t=>!t.done && t.status!=='skipped'));
+  const doingTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
+  if(doingTask){
+    $('#statusPill').textContent='专注中'; $('#statusPill').style.color='var(--accent)';
+  } else if(state.break_active){
+    $('#statusPill').textContent='休息中'; $('#statusPill').style.color='var(--warn)';
+  } else {
+    $('#statusPill').textContent='就绪'; $('#statusPill').style.color='var(--accent)';
+  }
+  renderMotivationScore();
+  renderBreakWidget();
+  renderOnboarding();
+  renderCurrentTaskBar();
+  syncFocusStatusPill();
+  renderSessionControls();
+  renderRecoveryAction();
+  renderReview();
+  renderGoalUnderstanding();
+  // Same file-picker guard as render()
+  const _hasFileSelected = $$('#taskList [data-evidence-file]').some(inp => inp.files && inp.files.length);
+  const _skipTaskList = _hasFileSelected || Date.now() - _lastFilePickTs < 5000;
+  if(!_skipTaskList){
+    const _beforeRects = captureTaskRects();
+    $('#taskList').innerHTML = state.tasks.map(taskCard).join('') || '<p class="hint">还没有任务。</p>';
+    staggerTasks();
+    flipTasks(_beforeRects);
+  }
+  addTaskAdjustControls();
+  renderCrashNotice();
+  renderUndoAction();
+  renderDailyWrap();
 }
 async function runGeneration(){
   setGenerationUi('running','正在启动任务生成…');
@@ -1147,24 +1047,6 @@ async function runGeneration(){
 async function run(name){
   try{
     if(name==='generate') return await runGeneration();
-    if(name==='generate'){
-      toast('启动生成任务...');
-      const started = await api(name,{});
-      toast(started.message || '已开始生成任务');
-      for(let i=0;i<80;i++){
-        await new Promise(r=>setTimeout(r,500));
-        const s=await api('generate-status');
-        toast(`${s.step}${s.message?'：'+s.message:''}`, s.step!=='失败');
-        if(!s.running && s.step!=='空闲') break;
-      }
-      await load();
-      const finalStatus = await api('generate-status');
-      if(finalStatus.message && finalStatus.message.includes('fallback')){
-        showModal('已用本地模板生成', '未配置 DeepSeek Key 或调用失败，已用本地兜底任务模板生成 3 个任务。\n如需 AI 智能生成，请去"设置"页配置 DeepSeek API Key。', 'warn');
-      }
-      return;
-    }
-    toast((runNames[name]||name)+'中...');
     const r = await api(name,{});
     toast(r.message || '完成', r.ok);
     if(name==='evaluate'){
@@ -1204,7 +1086,7 @@ document.addEventListener('click', async e=>{
     return;
   }
   if(e.target.closest?.('[data-goto-queue]')){
-    $('#taskList')?.scrollIntoView({behavior:'smooth',block:'start'});
+    scrollIntoViewSafe($('#taskList'), {block:'start'});
     return;
   }
   if(e.target.closest?.('[data-start-recovery]')){
@@ -1267,13 +1149,6 @@ document.addEventListener('click', async e=>{
     }
     return;
   }
-  if(e.target.dataset.primaryAction){
-    const a=e.target.dataset.primaryAction;
-    if(a==='settings'){ document.querySelector(`.nav-item[data-page="${a}"]`)?.click(); return; }
-    if(a==='tasks'){ $('#currentTaskBar')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
-    if(a==='generate'){ await run('generate'); return; }
-    if(a==='archive'){ await api('archive',{}); toast('已保存今日复盘'); await load(); return; }
-  }
   if(e.target.id==='startNextCycle'){
     try{ await api('next-cycle',{}); toast('复盘完成，正在生成下一轮任务'); await runGeneration(); }
     catch(err){ toast('无法开始下一轮：'+err.message,false); }
@@ -1303,17 +1178,10 @@ document.addEventListener('click', async e=>{
     if(text){const reason=state.plan_locked?await promptDlg('计划已锁定，请填写修改原因'):''; await api('task',{idx,text,reason}); await load();}
     return;
   }
-  if(e.target.id==='toggleLock' || e.target.id==='dashboardToggleLock'){
+  if(e.target.id==='dashboardToggleLock'){
     e.stopImmediatePropagation();
     const reason=state.plan_locked?await promptDlg('解锁原因'):'';
     await api('lock-plan',{locked:!state.plan_locked,reason}); toast(state.plan_locked?'已解锁':'已锁定'); await load(); return;
-  }
-  if(e.target.id==='saveTasks'){
-    e.stopImmediatePropagation();
-    const tasks=editorTasks();
-    if(!tasks.length){ showModal('无法保存','至少保留一个任务。','warn'); return; }
-    const reason=state.plan_locked?await promptDlg('计划已锁定，请填写修改原因'):'';
-    await api('tasks',{tasks,reason}); toast('任务已保存'); await load(); return;
   }
   if(e.target.dataset.removeArchive!==undefined){
     const date=e.target.dataset.removeArchive;
@@ -1335,49 +1203,20 @@ document.addEventListener('click', async e=>{
     const page = e.target.dataset.goto;
     $$('.nav-item').forEach(x=>x.classList.remove('active'));
     $(`.nav-item[data-page="${page}"]`)?.classList.add('active');
-    $$('.page').forEach(x=>x.classList.remove('active'));
-    $('#'+page).classList.add('active');
-    setPage(page);
-    activePage = page;
-    document.body.classList.remove('focus-active');
+    switchPage(page);
     return;
   }
   const nav = e.target.closest('.nav-item');
-  if(nav){ activePage=nav.dataset.page; $$('.nav-item').forEach(x=>x.classList.remove('active')); nav.classList.add('active'); $$('.page').forEach(x=>x.classList.remove('active')); $('#'+nav.dataset.page).classList.add('active'); document.body.classList.remove('focus-active'); setPage(nav.dataset.page); if(activePage==='dashboard') refreshLive(); return; }
+  if(nav){
+    const page = nav.dataset.page;
+    $$('.nav-item').forEach(x=>x.classList.remove('active'));
+    nav.classList.add('active');
+    switchPage(page);
+    return;
+  }
   if(e.target.id==='refresh') return load();
   if(e.target.id==='generate') return run('generate');
   if(e.target.id==='evaluate') return run('evaluate');
-  if(e.target.id==='regenPlan'){ await api('plan',{}); toast('时间块已生成'); await load(); return; }
-  if(e.target.id==='coachSend'){
-    const input=$('#coachInput'), message=input.value.trim();
-    if(!message){ toast('请输入对话内容', false); return; }
-    input.value='';
-    const r=await api('chat',{message});
-    renderCoachAction(r.action, r.reply);
-    await load();
-    return;
-  }
-  if(e.target.dataset.insightIgnore!==undefined){
-    await api('coach-action',{action:{type:'ignore_insight',insight_id:e.target.dataset.insightIgnore}});
-    toast('已忽略此项洞察'); await load();
-    return;
-  }
-  if(e.target.id==='coachQuietToday'){
-    await api('coach-action',{action:{type:'quiet'}});
-    toast('已静默至明日'); return;
-  }
-  if(e.target.dataset.insightChat!==undefined){
-    const r=await api('chat',{message:'请处理这个洞察：'+e.target.dataset.insightChat});
-    renderCoachAction(r.action, r.reply);
-    await load();
-    return;
-  }
-  if(e.target.id==='confirmCoachAction'){
-    const action=JSON.parse($('#coachAction').dataset.action||'{}');
-    const r=await api('coach-action',{action});
-    toast(r.message||'已执行'); $('#coachAction').innerHTML=''; await load(); return;
-  }
-  if(e.target.id==='cancelCoachAction'){ $('#coachAction').innerHTML=''; return; }
   if(e.target.dataset.aiEvaluate!==undefined){
     const idx=+e.target.dataset.aiEvaluate, t=state.tasks[idx] || {};
     let evidence=t.evidence || await askEvidence();
@@ -1414,8 +1253,6 @@ document.addEventListener('click', async e=>{
     return;
   }
   if(e.target.id==='generationRetry'){ await runGeneration(); return; }
-  if(e.target.id==='addTaskInline'){ state.tasks.push({text:'',done:false}); renderTaskEditor(); return; }
-  if(e.target.dataset.removeTask!==undefined){ state.tasks.splice(+e.target.dataset.removeTask,1); renderTaskEditor(); if($('#tasksText')) $('#tasksText').value=state.tasks.map(t=>t.text).join('\n'); return; }
   if(e.target.id==='saveSettings'){
     const goals=$('#goalsText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
     if(!goals.length){ showModal('无法保存','请至少设置一个目标。','warn'); return; }
@@ -1447,112 +1284,6 @@ document.addEventListener('click', async e=>{
   if(e.target.id==='clearFocusOverrides'){
     if(!confirmDlg('清除所有应用例外吗？')) return;
     await api('focus-policy',{action:'clear_overrides'}); toast('应用例外已清除'); await load(); return;
-  }
-  if(e.target.id==='addCatalogCategory'){
-    const name=await promptDlg('新大类名称');
-    state.app_catalog=state.app_catalog||{categories:[]};
-    const categories=state.app_catalog.categories=state.app_catalog.categories||[];
-    if(name && !categories.some(x=>(x.name||'').toLowerCase()===name.toLowerCase())){
-      categories.push({name,children:[{name:'未分类',apps:[]}]}); renderCatalog(); toast('已新增大类');
-    }
-    return;
-  }
-  if(e.target.dataset.addCatalogSub!==undefined){
-    const group=e.target.closest('[data-catalog-group]'), name=await promptDlg('新小类名称');
-    if(group && name){ const cat=(state.app_catalog.categories||[]).find(x=>(x.name||'')===group.dataset.catalogGroup); if(cat) cat.children=(cat.children||[]).concat({name,apps:[]}); renderCatalog(); toast('已新增小类'); }
-    return;
-  }
-  if(e.target.dataset.removeCatalogSub!==undefined){
-    if(!confirmDlg('删除这个小类及其应用归属吗？')) return;
-    e.target.closest('[data-catalog-row]')?.remove(); return;
-  }
-  if(e.target.dataset.removeCatalogCategory!==undefined){
-    if(!confirmDlg('删除这个大类及其全部小类吗？')) return;
-    e.target.closest('[data-catalog-group]')?.remove(); return;
-  }
-  if(e.target.id==='saveCatalog'){
-    await api('catalog',{catalog:catalogFromEditor()});
-    toast('分类已保存'); await load(); return;
-  }
-  if(e.target.id==='regenerateCatalog'){
-    if(!confirmDlg('此操作会清空当前分类并由 AI 重新生成，你手动调整的分类将丢失。是否继续？')) return;
-    await api('catalog-regenerate',{});
-    toast('已触发 AI 重新分类，请稍候');
-    setTimeout(load, 3000); return;
-  }
-  if(e.target.dataset.openCatalogPicker!==undefined){
-    const row=e.target.closest('[data-catalog-row]');
-    if(row.querySelector('.catalog-picker')) row.querySelector('.catalog-picker').remove();
-    else { if(!allApps.length) await loadProcesses(); renderCatalogPicker(row); }
-    return;
-  }
-  const pickedCatalog = e.target.closest('[data-pick-catalog-app]');
-  if(pickedCatalog){
-    const row=pickedCatalog.closest('[data-catalog-row]');
-    const exe=pickedCatalog.dataset.pickCatalogApp;
-    if(!row.querySelector(`[data-catalog-app="${CSS.escape(exe)}"]`)) row.querySelector('.catalog-apps').insertAdjacentHTML('beforeend', catalogAppChip(exe));
-    renderCatalogPicker(row, row.querySelector('[data-catalog-search]')?.value || '');
-    return;
-  }
-  if(e.target.dataset.removeCatalogApp!==undefined){ e.target.closest('[data-catalog-app]').remove(); return; }
-  const removeApp = e.target.closest('[data-remove-desktop-app]');
-  if(removeApp){ e.stopPropagation(); await api('request-app',{action:'remove',app:removeApp.dataset.removeDesktopApp}); toast('已移除'); await load(); return; }
-  const open = e.target.closest('[data-open-app]');
-  if(open){ await api('open-app',{exe:open.dataset.openApp}); toast('已打开 '+open.dataset.openApp); return; }
-  if(e.target.dataset.removeEvidence!==undefined){
-    e.preventDefault(); e.stopPropagation();
-    const di = +e.target.dataset.removeEvidence, ej = +e.target.dataset.evIdx;
-    const task = state.tasks[di];
-    if(!task) return;
-    const evList = Array.isArray(task.evidence) ? [...task.evidence] : (task.evidence ? [task.evidence] : []);
-    if(ej < 0 || ej >= evList.length) return;
-    evList.splice(ej, 1);
-    await api('task-evidence-list', {idx: di, evidence: evList});
-    toast('已移除该文件');
-    await load();
-    return;
-  }
-  if(e.target.id==='openRequestPicker'){
-    const box=$('#requestPicker');
-    if(box.innerHTML.trim()) box.innerHTML='';
-    else { if(!allApps.length) await loadProcesses(); renderAppPicker(box); }
-    return;
-  }
-  const reqPick=e.target.closest('[data-request-pick]');
-  if(reqPick){
-    const app=allApps.find(a=>a.exe===reqPick.dataset.requestPick);
-    $('#requestAppName').dataset.exe=reqPick.dataset.requestPick;
-    $('#requestAppName').textContent=(app?.name||reqPick.dataset.requestPick)+' · '+reqPick.dataset.requestPick;
-    $('#requestAddApp').disabled=false; $('#requestRemoveApp').disabled=false;
-    $('#requestPicker').innerHTML='';
-    return;
-  }
-  if(e.target.id==='reinferApps'){
-    if(!confirmDlg('将按每个任务重新匹配必需和可选应用，继续吗？')) return;
-    const previous=latestAppMatchEvent(state.events)?.ts;
-    toast('正在重新匹配应用...');
-    await api('reinfer-apps',{});
-    for(let i=0;i<60;i++){
-      await new Promise(r=>setTimeout(r,1000));
-      const next=await api('state'), event=latestAppMatchEvent(next.events);
-      if(event?.ts && event.ts!==previous){
-        state=normalizeState(next); render();
-        toast(event.kind==='ai_apps'?'应用已重新匹配':'应用匹配失败',event.kind==='ai_apps');
-        return;
-      }
-    }
-    showModal('匹配超时','应用仍在后台匹配，请稍后刷新查看。','warn');
-    return;
-  }
-  if(e.target.id==='requestAddApp'||e.target.id==='requestRemoveApp'){
-    const app=$('#requestAppName').dataset.exe;
-    if(!app) return toast('先选择应用', false);
-    const action=e.target.id==='requestAddApp'?'add':'remove';
-    const r=await api('request-app',{action,app});
-    toast(r.message||'完成', r.ok);
-    $('#requestAppName').dataset.exe=''; $('#requestAppName').textContent='未选择应用';
-    $('#requestAddApp').disabled=true; $('#requestRemoveApp').disabled=true;
-    await load(); return;
   }
   if(e.target.id==='saveDeepseekKey'){
     const key=$('#deepseekKey').value.trim();
@@ -1613,26 +1344,13 @@ document.addEventListener('change', async e=>{
     await uploadEvidenceFile(+e.target.dataset.evidenceFile, e.target);
     return;
   }
-  if(e.target.id==='goalSelect'){ await api('active-goal',{active_goal:+e.target.value||0}); await load(); }
   if(e.target.id==='goalSelectTop'){ await api('active-goal',{active_goal:+e.target.value||0}); await load(); }
 });
-document.addEventListener('input', e=>{
-  if(e.target.dataset.catalogSearch!==undefined){ renderCatalogPicker(e.target.closest('[data-catalog-row]'), e.target.value); return; }
-  if(e.target.dataset.requestSearch!==undefined){ renderAppPicker($('#requestPicker'), e.target.value); return; }
-  if(e.target.dataset.taskInput!==undefined && $('#tasksText')) $('#tasksText').value = editorTasks().map(t=>t.text || t.title || '').join('\n');
-  if(e.target.id==='tasksText'){
-    const lines = $('#tasksText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
-    const oldFlags = state.tasks.map(t=>!!t.done);
-    state.tasks = lines.map((text,i)=>({text, done: oldFlags[i] || false}));
-    renderTaskEditor();
-  }
-});
+// Kept only to populate allApps/usableApps (used by task app chips); rules-page DOM no longer exists.
 async function loadProcesses(){
   const r = await api('processes');
   allApps = r.apps || (r.processes || []).map(p=>({exe:p,name:p,title:'',source:'running',icon:''}));
   usableApps = r.usable_apps || allApps;
-  renderDesktop();
-  renderCatalog();
 }
 // Keep the first-level navigation about action and review; advanced app rules stay available in settings/code paths.
   document.querySelector('[data-page="review"] span')?.replaceChildren('记录');
@@ -1640,6 +1358,11 @@ async function loadProcesses(){
   setInterval(updateClock,1000);
   setInterval(refreshLive,2000);
   setInterval(heartbeat,4000);
+  // Dashboard skeleton while the first state fetch is in flight (replaced by real rows in load()).
+  (function(){
+    const list = $('#taskList');
+    if(list && !list.children.length) list.innerHTML = '<div class="task skeleton"></div><div class="task skeleton"></div><div class="task skeleton"></div>';
+  })();
   // Claim the backend session before the first protected state request.
 ensureSession().then(ok=>{
     if(!ok) throw new Error('无法建立本地会话，请重试或接管窗口');
@@ -1675,7 +1398,25 @@ async function heartbeat(){
   }catch(_){}
 }
 document.addEventListener('keydown', e=>{
-  if((e.key==='Enter'||e.key===' ') && e.target.dataset.removeDesktopApp!==undefined){ e.preventDefault(); e.target.click(); }
+  // Modal accessibility: Esc closes the topmost open modal; Tab is trapped inside it.
+  if(e.key==='Escape' && _openModals.size){
+    e.preventDefault();
+    const top=[..._openModals].pop();
+    // Click the cancel button when present so pending prompt/evidence promises resolve as 'cancel'.
+    const cancelBtn = top.querySelector('[data-evidence-cancel], [data-cancel]');
+    if(cancelBtn) cancelBtn.click();
+    else closeModal(top);
+    return;
+  }
+  if(e.key==='Tab' && _openModals.size){
+    const top=[..._openModals].pop();
+    const items=modalFocusables(top);
+    if(!items.length){ e.preventDefault(); return; }
+    const first=items[0], last=items[items.length-1];
+    if(!top.contains(document.activeElement)){ e.preventDefault(); first.focus(); return; }
+    if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); return; }
+    if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); return; }
+  }
 });
 async function showPrivacyNotice(){
   if(state.privacy?.monitoring_consent) return;
