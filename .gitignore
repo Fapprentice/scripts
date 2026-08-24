@@ -32,6 +32,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Local dev / test residue (sandbox 0o700 artifacts + venv)
+.pytest-env/
+pytest-of-lianyue/
+.ui-venv/
+.ui-uv-cache/
+.ui-uv-py/
+.ui-baseline/
+.ui-pytest-tmp/
+.agent-teams/
+tmp*/
+
 # IDE
 .vscode/
 .idea/

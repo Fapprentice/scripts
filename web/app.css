@@ -134,6 +134,43 @@
 }
 
 /* ============================================================
+   1b. Dark theme — [data-theme="dark"] overrides the palette
+   (sidebar stays dark in both themes by design; heat scale is
+   kept from :root since cells are self-contained colors)
+   ============================================================ */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --mc-canvas: #0c1118;
+  --mc-panel: #151922;
+  --mc-border: #222a36;
+  --mc-text: #e5e7eb;
+  --mc-muted: #9ca3af;
+  --mc-muted-2: #6b7280;
+  --mc-primary: #818cf8;
+  --mc-primary-hover: #93a0fb;
+  --mc-primary-soft: rgba(129, 140, 248, 0.16);
+  --mc-on-primary: #10141f;
+  --mc-good: #4ade80;
+  --mc-good-dim: rgba(74, 222, 128, 0.15);
+  --mc-bad: #f87171;
+  --mc-bad-dim: rgba(248, 113, 113, 0.15);
+  --mc-warn: #fbbf24;
+  --mc-warn-dim: rgba(251, 191, 36, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.45), 0 4px 8px rgba(0, 0, 0, 0.30);
+
+  /* Legacy aliases that are light-mode rgba tints (re-tinted for dark) */
+  --accent-glow: rgba(129, 140, 248, 0.14);
+  --good-surface: rgba(74, 222, 128, 0.10);
+  --bad-surface: rgba(248, 113, 113, 0.10);
+  --warn-surface: rgba(251, 191, 36, 0.10);
+  --line-hover: rgba(255, 255, 255, 0.10);
+}
+
+/* ============================================================
    2. Reset & base
    ============================================================ */
 *, *::before, *::after { box-sizing: border-box; }
@@ -357,6 +394,31 @@ label {
   letter-spacing: -0.02em;
 }
 
+/* Theme toggle (sidebar foot) — shows moon in light theme, sun in dark */
+.theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--mc-shell-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--mc-shell-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.theme-toggle:hover { color: var(--mc-shell-text); background: var(--mc-shell-hover); }
+.theme-toggle:active { transform: scale(0.95); }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
 /* Main = scroll container (P0 fix) */
 .main {
   min-width: 0;
@@ -549,9 +611,11 @@ label {
 .mission-title > div { display: grid; justify-items: end; gap: 2px; }
 .mission-title small { color: var(--mc-muted); font-size: var(--fs-2xs); }
 .mission-title strong {
-  color: var(--mc-text);
+  /* Timer is a secondary readout: the goal title (h2, up to 38px) owns the hierarchy */
+  color: var(--mc-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-3xl);
+  font-size: var(--fs-xl);
+  font-variant-numeric: tabular-nums;
   line-height: 1.2;
   font-weight: 500;
   letter-spacing: 0.03em;

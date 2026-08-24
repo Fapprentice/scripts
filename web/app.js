@@ -22,6 +22,25 @@ function scrollIntoViewSafe(el, opts={}){
   if(!el) return;
   el.scrollIntoView({behavior: prefersReducedMotion() ? 'auto' : 'smooth', ...opts});
 }
+// ---- theme (light / dark): data-theme on <html>, persisted in localStorage ----
+const THEME_KEY = 'taskverge-theme';
+function currentTheme(){ return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'; }
+function applyTheme(theme){
+  document.documentElement.dataset.theme = theme;
+  try{ localStorage.setItem(THEME_KEY, theme); }catch(_){}
+  const btn = document.getElementById('themeToggle');
+  if(btn) btn.setAttribute('aria-pressed', String(theme === 'dark'));
+}
+function initTheme(){
+  let saved = null;
+  try{ saved = localStorage.getItem(THEME_KEY); }catch(_){}
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  applyTheme(saved || (prefersDark ? 'dark' : 'light'));
+}
+initTheme();
+document.getElementById('themeToggle')?.addEventListener('click', ()=>{
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+});
 let _pageSwitchGen = 0, _pageSwitchTimer = null;
 function switchPage(page){
   if(page===activePage) return;
@@ -29,22 +48,30 @@ function switchPage(page){
   if(!next) return;
   const old = document.querySelector('.page.active');
   const gen = ++_pageSwitchGen;
-  const done = () => {
-    if(gen !== _pageSwitchGen) return;          // superseded by a newer switch
-    if(_pageSwitchTimer){ clearTimeout(_pageSwitchTimer); _pageSwitchTimer=null; }
+  const swap = () => {
     if(old) old.classList.remove('active','page-leaving');
     $$('.page').forEach(x=>x.classList.remove('active'));
     next.classList.add('active');               // CSS pageIn plays on .page.active
+  };
+  const finish = () => {
+    if(gen !== _pageSwitchGen) return;          // superseded by a newer switch
+    if(_pageSwitchTimer){ clearTimeout(_pageSwitchTimer); _pageSwitchTimer=null; }
     setPage(page);
     activePage = page;
     document.body.classList.remove('focus-active');
     if(page==='dashboard') refreshLive();
   };
-  if(!old || old===next || prefersReducedMotion()){ done(); return; }
-  old.classList.add('page-leaving');            // CSS pageOut animation
-  const onEnd = e => { if(e && e.target!==old) return; old.removeEventListener('animationend', onEnd); done(); };
+  if(!old || old===next || prefersReducedMotion()){ swap(); finish(); return; }
+  if(document.startViewTransition){
+    // View Transitions API: native crossfade (progressive enhancement over the class fallback)
+    const vt = document.startViewTransition(swap);
+    vt.finished.then(finish).catch(finish);
+    return;
+  }
+  old.classList.add('page-leaving');            // CSS pageOut animation (fallback)
+  const onEnd = e => { if(e && e.target!==old) return; old.removeEventListener('animationend', onEnd); swap(); finish(); };
   old.addEventListener('animationend', onEnd);
-  _pageSwitchTimer = setTimeout(done, 180);     // fallback if animationend never fires
+  _pageSwitchTimer = setTimeout(()=>{ swap(); finish(); }, 180); // fallback if animationend never fires
 }
 // ---- unified modal base: role/aria + initial focus + Esc + focus trap + .modal-leaving exit ----
 const _openModals = new Set();
