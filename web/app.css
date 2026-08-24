@@ -597,7 +597,14 @@ label {
 
 .break-widget { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-3); flex-wrap: wrap; }
 .break-widget input { flex: 1; min-width: 140px; }
-.break-widget #breakInfo { font-size: var(--fs-2xs); color: var(--mc-muted); margin-left: var(--sp-1); }
+.break-widget #breakInfo { font-size: var(--fs-2xs); color: var(--mc-muted); margin-left: var(--sp-1); font-variant-numeric: tabular-nums; }
+/* break countdown state: end-break button */
+.break-widget .break-end {
+  border-color: var(--mc-warn);
+  color: var(--mc-warn);
+  background: var(--mc-warn-dim);
+}
+.break-widget .break-end:hover { box-shadow: var(--shadow-sm); }
 
 /* ============================================================
    6. Mission task card (current-task-bar)

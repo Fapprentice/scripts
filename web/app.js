@@ -41,6 +41,8 @@ initTheme();
 document.getElementById('themeToggle')?.addEventListener('click', ()=>{
   applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
 });
+// 1s break countdown ticker (updateBreakCountdown is a hoisted function declaration)
+setInterval(updateBreakCountdown, 1000);
 let _pageSwitchGen = 0, _pageSwitchTimer = null;
 function switchPage(page){
   if(page===activePage) return;
@@ -422,6 +424,32 @@ function renderOnboarding(){
     <ol>${steps.join('')}</ol>${recovery}
   </div>`;
 }
+function activeBreak(){
+  // most recently started break that is still running (until > now)
+  const breaks = state.breaks || [];
+  const now = Date.now()/1000;
+  for(let i=breaks.length-1; i>=0; i--){
+    const b = breaks[i];
+    if(b && Number(b.until) > now) return b;
+  }
+  return null;
+}
+function formatRemain(sec){
+  sec = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(sec/60), s = sec%60;
+  return m + ':' + String(s).padStart(2,'0');
+}
+function setBreakWidgetState(active){
+  const btn = $('#quickStartBreak');
+  const reason = $('#quickBreakReason');
+  const mins = $('#quickBreakMinutes');
+  if(reason) reason.style.display = active ? 'none' : '';
+  if(mins) mins.style.display = active ? 'none' : '';
+  if(btn){
+    btn.textContent = active ? '结束休息' : '开始休息';
+    btn.classList.toggle('break-end', !!active);
+  }
+}
 function renderBreakWidget(){
   const info = $('#breakInfo');
   if(!info) return;
@@ -433,17 +461,37 @@ function renderBreakWidget(){
     $('#statusPill').textContent='专注中';
     $('#statusPill').style.color='var(--accent)';
   } else if(state.break_active){
-    const now = Date.now()/1000;
-    const active = breaks.find(b => b.until && b.until > now);
+    const active = activeBreak();
     if(active){
-      const remain = Math.max(0, Math.ceil((active.until - now)/60));
-      info.textContent = `休息中，剩 ${remain} 分钟（今日 ${todays.length}/3 次）`;
+      $('#statusPill').textContent='休息中';
+      $('#statusPill').style.color='var(--warn)';
+      info.textContent = `休息中，剩 ${formatRemain(active.until - Date.now()/1000)}（今日 ${todays.length}/3 次）`;
       info.style.color = 'var(--warn)';
+      setBreakWidgetState(true);
       return;
     }
   }
   info.textContent = `今日 ${todays.length}/3 次`;
   info.style.color = 'var(--muted)';
+  setBreakWidgetState(false);
+}
+// 1s countdown ticker — updates remaining time while a break is running
+let _breakWasActive = false;
+function updateBreakCountdown(){
+  const info = $('#breakInfo');
+  if(!info) return;
+  if(state.break_active){
+    const active = activeBreak();
+    if(active){
+      _breakWasActive = true;
+      const todayStr = new Date().toISOString().slice(0,10);
+      const todays = (state.breaks||[]).filter(b => (b.date||'').slice(0,10) === todayStr).length;
+      info.textContent = `休息中，剩 ${formatRemain(active.until - Date.now()/1000)}（今日 ${todays}/3 次）`;
+      info.style.color = 'var(--warn)';
+      return;
+    }
+  }
+  if(_breakWasActive){ _breakWasActive = false; renderBreakWidget(); }  // break just ended -> restore widget
 }
 function render(){
   localizeShell();
@@ -1321,8 +1369,14 @@ document.addEventListener('click', async e=>{
   }
   if(e.target.id==='quickStartBreak'){
     try{
-      await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value});
-      toast('已开始休息'); await load();
+      if(state.break_active){
+        const r=await api('break-end',{});
+        toast(r.ended?'已结束休息':'没有进行中的休息');
+      }else{
+        await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value});
+        toast('已开始休息');
+      }
+      await load();
     }catch(_){}
     return;
   }

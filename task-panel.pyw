@@ -1966,6 +1966,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 todays=[b for b in c.get("breaks",[]) if b.get("date")==today()]
                 if len(todays)>=3: return self.send_json({"ok":False,"message":"今天休息次数已用完"},400)
                 c.setdefault("breaks",[]); c["breaks"].append({"date":today(),"ts":datetime.now().isoformat(),"until":time.time()+mins*60,"minutes":mins,"reason":reason}); evlog(c,"break",reason,{"minutes":mins}); sc(c); return self.send_json({"ok":True})
+            if self.path=="/api/break-end":
+                now=time.time(); ended=False
+                for b in c.get("breaks",[]):
+                    if isinstance(b,dict) and float(b.get("until",0) or 0)>now:
+                        b["until"]=now; b["ended"]=True; ended=True
+                evlog(c,"break_end","结束休息",{"ended":ended}); sc(c)
+                return self.send_json({"ok":True,"ended":ended})
             if self.path=="/api/quit":
                 reason=task_text(data.get("reason",""))
                 action=task_text(data.get("action","quit"))
