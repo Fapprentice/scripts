@@ -206,6 +206,7 @@ async function api(path, body){
   if(!r.ok){
     let msg = await r.text();
     try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
+    if(/^\s*</.test(msg)) msg = '服务器返回错误 (' + r.status + ')。若是「结束休息」等新功能，请退出并重新打开应用以加载最新后端。';
     showModal('操作失败', msg);
     throw new Error(msg);
   }
@@ -252,6 +253,7 @@ async function uploadApi(path, formData){
   if(!r.ok){
     let msg = await r.text();
     try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
+    if(/^\s*</.test(msg)) msg = '服务器返回错误 (' + r.status + ')。若是「结束休息」等新功能，请退出并重新打开应用以加载最新后端。';
     showModal('操作失败', msg);
     throw new Error(msg);
   }
@@ -1370,8 +1372,13 @@ document.addEventListener('click', async e=>{
   if(e.target.id==='quickStartBreak'){
     try{
       if(state.break_active){
-        const r=await api('break-end',{});
-        toast(r.ended?'已结束休息':'没有进行中的休息');
+        try{
+          const r=await api('break-end',{});
+          toast(r.ended?'已结束休息':'没有进行中的休息');
+        }catch(err){
+          showModal('需要重启应用', '「结束休息」需要新版后端。请退出并重新打开 Task Verge（任务与休息数据会自动保留）。');
+          return;
+        }
       }else{
         await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value});
         toast('已开始休息');
