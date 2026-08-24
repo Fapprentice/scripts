@@ -604,7 +604,14 @@ function renderMotivationScore(){
   if($('#motivationStreak')) countTo($('#motivationStreak'), Number(motivation.streak)||0);
   if($('#motivationBest')) countTo($('#motivationBest'), Number(motivation.best_streak)||0);
   if($('#motivationHistory')) $('#motivationHistory').innerHTML=(motivation.history||[]).slice(-4).reverse().map(x=>`<div class="ledger-row ${Number(x.points)>=0?'positive':'negative'}"><b>${Number(x.points)>=0?'+':''}${x.points||0}</b><span>${escapeHtml(({accepted:'验收通过',partial:'部分完成',skipped:'跳过任务',failed:'验收失败'}[x.outcome]||x.outcome||'反馈'))}</span></div>`).join('')||'<p class="hint">完成任务后显示反馈记录</p>';
-  if($('#motivationRecovery')) $('#motivationRecovery').hidden=!(state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
+  if($('#motivationRecovery')){
+    // Show the recovery card only when a stuck task exists AND no recovery
+    // task is already running (recovery creates a role=recovery task; once
+    // started, the card hides until that recovery completes).
+    const stuck = (state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
+    const recovering = (state.tasks||[]).some(t=>!t.done&&t.role==='recovery');
+    $('#motivationRecovery').hidden = !stuck || recovering;
+  }
 }
 
 function localizeShell(){
