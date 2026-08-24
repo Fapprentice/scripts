@@ -1,0 +1,408 @@
+.................................................sssssssssssssssss...F.. [ 48%]
+......sssssssss................F..EEE...s............................... [ 96%]
+.....                                                                    [100%]
+=================================== ERRORS ====================================
+___________ ERROR at teardown of TestSecretStore.test_key_file_path ___________
+
+top = 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpa2pukz3m'
+topdown = False
+onerror = <function _rmtree_unsafe.<locals>.onerror at 0x0000021C0EB38900>
+followlinks = <object object at 0x0000021C0B398200>
+
+>   ???
+E   PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpa2pukz3m'
+
+<frozen os>:366: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+cls = <class 'test_secretstore.TestSecretStore'>
+
+    @classmethod
+    def teardown_class(cls):
+        # Cleanup test key file
+        try:
+            os.remove(secretstore._key_file_path())
+        except OSError:
+            pass
+>       _KEY_DIR.cleanup()
+
+tests\test_secretstore.py:37: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:954: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:934: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:623: in _rmtree_unsafe
+    for dirpath, dirnames, filenames in results:
+                                        ^^^^^^^
+<frozen os>:369: in walk
+    ???
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:621: in onerror
+    onexc(os.scandir, err.filename, err)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:906: in onexc
+    _resetperms(path)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:286: in _resetperms
+    _dont_follow_symlinks(_os.chmod, path, 0o700)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function chmod>
+path = 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpa2pukz3m'
+args = (448,)
+
+    def _dont_follow_symlinks(func, path, *args):
+        # Pass follow_symlinks=False, unless not supported on this platform.
+        if func in _os.supports_follow_symlinks:
+            func(path, *args, follow_symlinks=False)
+        elif _os.name == 'nt' or not _os.path.islink(path):
+>           func(path, *args)
+E           PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpa2pukz3m'
+
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:277: PermissionError
+________________ ERROR at setup of test_json_store_round_trip _________________
+
+cls = <class '_pytest.runner.CallInfo'>
+func = <function call_and_report.<locals>.<lambda> at 0x0000021C0EB38AE0>
+when = 'setup'
+reraise = (<class '_pytest.outcomes.Exit'>, <class 'KeyboardInterrupt'>)
+
+    @classmethod
+    def from_call(
+        cls,
+        func: Callable[[], TResult],
+        when: Literal["collect", "setup", "call", "teardown"],
+        reraise: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    ) -> CallInfo[TResult]:
+        """Call func, wrapping the result in a CallInfo.
+    
+        :param func:
+            The function to call. Called without arguments.
+        :type func: Callable[[], _pytest.runner.TResult]
+        :param when:
+            The phase in which the function is called.
+        :param reraise:
+            Exception or exceptions that shall propagate if raised by the
+            function, instead of being wrapped in the CallInfo.
+        """
+        excinfo = None
+        instant = timing.Instant()
+        try:
+>           result: TResult | None = func()
+                                     ^^^^^^
+
+.ui-venv\Lib\site-packages\_pytest\runner.py:361: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.ui-venv\Lib\site-packages\_pytest\runner.py:250: in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\logging.py:858: in pytest_runtest_setup
+    yield
+.ui-venv\Lib\site-packages\_pytest\capture.py:895: in pytest_runtest_setup
+    return (yield)
+            ^^^^^
+.ui-venv\Lib\site-packages\_pytest\runner.py:170: in pytest_runtest_setup
+    item.session._setupstate.setup(item)
+.ui-venv\Lib\site-packages\_pytest\runner.py:536: in setup
+    col.setup()
+.ui-venv\Lib\site-packages\_pytest\python.py:1710: in setup
+    self._request._fillfixtures()
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:806: in _fillfixtures
+    item.funcargs[argname] = self.getfixturevalue(argname)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:630: in getfixturevalue
+    fixturedef = self._get_active_fixturedef(argname)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:726: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:1232: in execute
+    result: FixtureValue = ihook.pytest_fixture_setup(
+.ui-venv\Lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\setuponly.py:36: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:1328: in pytest_fixture_setup
+    result = call_fixture_func(fixturefunc, request, kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:998: in call_fixture_func
+    fixture_result = next(generator)
+                     ^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:300: in tmp_path
+    path = _mk_tmp(request, tmp_path_factory)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:287: in _mk_tmp
+    return factory.mktemp(name, numbered=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:136: in mktemp
+    basename = self._ensure_relative_to_basetemp(basename)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:117: in _ensure_relative_to_basetemp
+    if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+        ^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:213: in getbasetemp
+    basetemp = make_numbered_dir_with_cleanup(
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:420: in make_numbered_dir_with_cleanup
+    raise e
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:401: in make_numbered_dir_with_cleanup
+    p = make_numbered_dir(root, prefix, mode)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:228: in make_numbered_dir
+    max_existing = max(map(parse_num, find_suffixes(root, prefix)), default=-1)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:187: in extract_suffixes
+    for entry in iter:
+                 ^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/lianyue/AppData/Local/Temp/dsh-bHM1Km/pytest-of-lianyue')
+prefix = 'pytest-'
+
+    def find_prefixed(root: Path, prefix: str) -> Iterator[os.DirEntry[str]]:
+        """Find all elements in root that begin with the prefix, case-insensitive."""
+        l_prefix = prefix.lower()
+>       for x in os.scandir(root):
+                 ^^^^^^^^^^^^^^^^
+E       PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\pytest-of-lianyue'
+
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:175: PermissionError
+______ ERROR at setup of test_json_store_keeps_previous_file_on_bad_json ______
+
+cls = <class '_pytest.runner.CallInfo'>
+func = <function call_and_report.<locals>.<lambda> at 0x0000021C0EB3ACA0>
+when = 'setup'
+reraise = (<class '_pytest.outcomes.Exit'>, <class 'KeyboardInterrupt'>)
+
+    @classmethod
+    def from_call(
+        cls,
+        func: Callable[[], TResult],
+        when: Literal["collect", "setup", "call", "teardown"],
+        reraise: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    ) -> CallInfo[TResult]:
+        """Call func, wrapping the result in a CallInfo.
+    
+        :param func:
+            The function to call. Called without arguments.
+        :type func: Callable[[], _pytest.runner.TResult]
+        :param when:
+            The phase in which the function is called.
+        :param reraise:
+            Exception or exceptions that shall propagate if raised by the
+            function, instead of being wrapped in the CallInfo.
+        """
+        excinfo = None
+        instant = timing.Instant()
+        try:
+>           result: TResult | None = func()
+                                     ^^^^^^
+
+.ui-venv\Lib\site-packages\_pytest\runner.py:361: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.ui-venv\Lib\site-packages\_pytest\runner.py:250: in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\logging.py:858: in pytest_runtest_setup
+    yield
+.ui-venv\Lib\site-packages\_pytest\capture.py:895: in pytest_runtest_setup
+    return (yield)
+            ^^^^^
+.ui-venv\Lib\site-packages\_pytest\runner.py:170: in pytest_runtest_setup
+    item.session._setupstate.setup(item)
+.ui-venv\Lib\site-packages\_pytest\runner.py:536: in setup
+    col.setup()
+.ui-venv\Lib\site-packages\_pytest\python.py:1710: in setup
+    self._request._fillfixtures()
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:806: in _fillfixtures
+    item.funcargs[argname] = self.getfixturevalue(argname)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:630: in getfixturevalue
+    fixturedef = self._get_active_fixturedef(argname)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:726: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:1232: in execute
+    result: FixtureValue = ihook.pytest_fixture_setup(
+.ui-venv\Lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\setuponly.py:36: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:1328: in pytest_fixture_setup
+    result = call_fixture_func(fixturefunc, request, kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\fixtures.py:998: in call_fixture_func
+    fixture_result = next(generator)
+                     ^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:300: in tmp_path
+    path = _mk_tmp(request, tmp_path_factory)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:287: in _mk_tmp
+    return factory.mktemp(name, numbered=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:136: in mktemp
+    basename = self._ensure_relative_to_basetemp(basename)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:117: in _ensure_relative_to_basetemp
+    if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+        ^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\tmpdir.py:213: in getbasetemp
+    basetemp = make_numbered_dir_with_cleanup(
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:420: in make_numbered_dir_with_cleanup
+    raise e
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:401: in make_numbered_dir_with_cleanup
+    p = make_numbered_dir(root, prefix, mode)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:228: in make_numbered_dir
+    max_existing = max(map(parse_num, find_suffixes(root, prefix)), default=-1)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:187: in extract_suffixes
+    for entry in iter:
+                 ^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/lianyue/AppData/Local/Temp/dsh-bHM1Km/pytest-of-lianyue')
+prefix = 'pytest-'
+
+    def find_prefixed(root: Path, prefix: str) -> Iterator[os.DirEntry[str]]:
+        """Find all elements in root that begin with the prefix, case-insensitive."""
+        l_prefix = prefix.lower()
+>       for x in os.scandir(root):
+                 ^^^^^^^^^^^^^^^^
+E       PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\pytest-of-lianyue'
+
+.ui-venv\Lib\site-packages\_pytest\pathlib.py:175: PermissionError
+================================== FAILURES ===================================
+___________________ TestSetupLogging.test_creates_log_files ___________________
+
+self = <test_applog.TestSetupLogging object at 0x0000021C0E9B13D0>
+
+    def test_creates_log_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+>           applog.setup_logging(tmp)
+
+tests\test_applog.py:34: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+applog.py:99: in setup_logging
+    bh = logging.handlers.RotatingFileHandler(
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\logging\handlers.py:155: in __init__
+    BaseRotatingHandler.__init__(self, filename, mode, encoding=encoding,
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\logging\handlers.py:58: in __init__
+    logging.FileHandler.__init__(self, filename, mode=mode,
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\logging\__init__.py:1231: in __init__
+    StreamHandler.__init__(self, self._open())
+                                 ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <[AttributeError("'RotatingFileHandler' object has no attribute 'level'") raised in repr()] RotatingFileHandler object at 0x21c0e0a4aa0>
+
+    def _open(self):
+        """
+        Open the current base file with the (original) mode and encoding.
+        Return the resulting stream.
+        """
+        open_func = self._builtin_open
+>       return open_func(self.baseFilename, self.mode,
+                         encoding=self.encoding, errors=self.errors)
+E       PermissionError: [Errno 13] Permission denied: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpcdffo9g5\\boot.log'
+
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\logging\__init__.py:1263: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+top = 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpcdffo9g5'
+topdown = False
+onerror = <function _rmtree_unsafe.<locals>.onerror at 0x0000021C0EA8CEA0>
+followlinks = <object object at 0x0000021C0B398200>
+
+>   ???
+E   PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpcdffo9g5'
+
+<frozen os>:366: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_applog.TestSetupLogging object at 0x0000021C0E9B13D0>
+
+    def test_creates_log_files(self):
+>       with tempfile.TemporaryDirectory() as tmp:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_applog.py:33: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:950: in __exit__
+    self.cleanup()
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:954: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:934: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:623: in _rmtree_unsafe
+    for dirpath, dirnames, filenames in results:
+                                        ^^^^^^^
+<frozen os>:369: in walk
+    ???
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\shutil.py:621: in onerror
+    onexc(os.scandir, err.filename, err)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:906: in onexc
+    _resetperms(path)
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:286: in _resetperms
+    _dont_follow_symlinks(_os.chmod, path, 0o700)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function chmod>
+path = 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpcdffo9g5'
+args = (448,)
+
+    def _dont_follow_symlinks(func, path, *args):
+        # Pass follow_symlinks=False, unless not supported on this platform.
+        if func in _os.supports_follow_symlinks:
+            func(path, *args, follow_symlinks=False)
+        elif _os.name == 'nt' or not _os.path.islink(path):
+>           func(path, *args)
+E           PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\lianyue\\AppData\\Local\\Temp\\dsh-bHM1Km\\tmpcdffo9g5'
+
+C:\Users\lianyue\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\tempfile.py:277: PermissionError
+_______________ TestSecretStore.test_encrypt_decrypt_roundtrip ________________
+
+self = <test_secretstore.TestSecretStore object at 0x0000021C0EA26D80>
+
+    def test_encrypt_decrypt_roundtrip(self):
+        original = "test-deepseek-key-1234567890"
+>       assert secretstore.save_key(original) is True
+E       AssertionError: assert False is True
+E        +  where False = <function save_key at 0x0000021C0EA33880>('test-deepseek-key-1234567890')
+E        +    where <function save_key at 0x0000021C0EA33880> = secretstore.save_key
+
+tests\test_secretstore.py:18: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_applog.py::TestSetupLogging::test_creates_log_files - Permi...
+FAILED tests/test_secretstore.py::TestSecretStore::test_encrypt_decrypt_roundtrip
+ERROR tests/test_secretstore.py::TestSecretStore::test_key_file_path - Permis...
+ERROR tests/test_state_store.py::test_json_store_round_trip - PermissionError...
+ERROR tests/test_state_store.py::test_json_store_keeps_previous_file_on_bad_json
+2 failed, 117 passed, 27 skipped, 3 errors in 0.80s
