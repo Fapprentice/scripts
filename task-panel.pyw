@@ -16,6 +16,7 @@ from utils import (
 )
 import adaptive
 import acceptance as _ACCEPTANCE_MOD
+import evaluation as _EVALUATION_MOD
 import agent as _agent_mod
 import applog as _APPLOG
 import apprules as _APPRULES
@@ -97,6 +98,7 @@ P = {
         "Start Menu","Programs","Startup","task-panel.bat"),
     "crash": os.path.join(APP_DIR, "crash.log"),
     "stop": os.path.join(APP_DIR, "task-panel.stop"),
+    "eval_samples": os.path.join(APP_DIR, "eval-samples.jsonl"),
 }
 # User data lives in %LOCALAPPDATA%; bundled frontend assets stay beside the
 # entry script so a fresh data directory can still render the application.
@@ -128,6 +130,17 @@ def path_under(root, path):
         return os.path.commonpath((base, target)) == base
     except (OSError, ValueError):
         return False
+
+def sample_ai_incident(stage, model="", criterion_ids=(), user_content="", retain_content=False):
+    """Store regression-candidate metadata; content retention is opt-in only."""
+    try:
+        ids = [str(x.get("id")) if isinstance(x, dict) else str(x) for x in criterion_ids if x]
+        return _EVALUATION_MOD.record_production_sample(P["eval_samples"], {
+            "model": model, "failure_stage": stage, "criterion_ids": ids,
+            "user_content": user_content,
+        }, retain_content=bool(retain_content))
+    except (OSError, TypeError, ValueError):
+        return None
 _CFG_LOCK = threading.RLock()
 def compact_state(c):
     c["events"]=c.get("events",[])[-300:]
@@ -346,6 +359,7 @@ def unfinished(c):
 def task_payload(tasks, flags=None):
     return [{"index": i, "title": t.get("title", ""), "status": t.get("status", "pending"),
              "done": task_done(t, (flags or [])[i] if i < len(flags or []) else False),
+             "criterion_ids": t.get("criterion_ids", []),
              "expected_output": t.get("expected_output", ""), "acceptance": t.get("acceptance", "")}
             for i, t in enumerate(normalize_tasks(tasks, "", flags or []))]
 
@@ -472,10 +486,12 @@ def fallback_task_templates(goal, settings=None):
 
 def save_diagnostic_plan(c, tasks, mode="diagnostic"):
     goal_id=gid(c)
+    criterion_ids=[x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
     completed=[t for t in normalize_tasks(c.get("tasks",[]),goal_id,c.get("done_flags",[])) if task_done(t)]
     fresh=[]
     for raw in tasks:
         task=normalize_task(raw,goal_id,len(completed)+len(fresh),False)
+        if criterion_ids: task["criterion_ids"]=criterion_ids[:]
         task["id"]=new_id("task"); task["status"]="pending"; fresh.append(task)
     c["tasks"]=completed+fresh; c["done_flags"]=[True]*len(completed)+[False]*len(fresh)
     sync_pct(c); c["plan_locked"]=True
@@ -525,9 +541,11 @@ def ensure_ability_dimensions(c):
 
 def build_task_prompt(c):
     settings = effective_gen_settings(c)
+    criteria = _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))
     unfinished_items = [t for t in normalize_tasks(c.get("tasks", []), gid(c), c.get("done_flags", [])) if t.get("status") != "done"]
     prompt = {
         "goal": c.get("goal", ""), "goal_details": goal_details(c),
+        "success_criteria_records": criteria,
         "user_model": {k:v for k,v in (c.get("user_model", {}) or {}).items()
                        if k not in ("skills", "fsrs_review_logs", "fsrs_scheduler")},
         "knowledge_graph": adaptive.knowledge_graph(c),
@@ -544,6 +562,7 @@ def build_task_prompt(c):
                              "knowledge_graph": {"nodes": [{"id": "", "title": "", "description": "",
                                                             "prerequisites": []}]},
                              "daily_strategy": "", "tasks": [{"title": "", "description": "", "type": "practice",
+                             "criterion_ids": ["Use IDs from success_criteria_records"],
                              "estimated_minutes": 30, "expected_output": "", "acceptance": "", "required_apps": [],
                              "allowed_apps": [], "depends_on": [], "skill_id": "", "prerequisites": [],
                              "learning_task_type": "recall", "materials": [{"type":"question|passage|audio_script|prompt|data|code","title":"","content":"","prompt":"","options":[],"answer":""}],
@@ -551,8 +570,9 @@ def build_task_prompt(c):
     }
     return settings, json.dumps(prompt, ensure_ascii=False)
 
-def validate_ai_tasks(goal, tasks, settings):
+def validate_ai_tasks(goal, tasks, settings, criterion_ids=()):
     if not isinstance(tasks, list): return []
+    valid_criteria = set(criterion_ids)
     out = []; seen = set(); semantic_seen = set()
     for raw in tasks:
         if not isinstance(raw, dict): continue
@@ -561,6 +581,16 @@ def validate_ai_tasks(goal, tasks, settings):
         title = task_text(raw.get("title") or raw.get("text") or raw.get("name"))
         if len(title) < 3 or title.casefold() in seen: continue
         item = normalize_task(dict(raw, title=title), "", len(out), False)
+        if valid_criteria:
+            item["criterion_ids"] = [x for x in item.get("criterion_ids", []) if x in valid_criteria]
+            if not item["criterion_ids"]: continue
+        for index, material in enumerate(item.get("materials", []), 1):
+            material.setdefault("id", "{}-material-{}".format(item["id"], index))
+        if not item.get("answer_key"):
+            item["answer_key"] = [{"id": "{}-key-{}".format(item["id"], index),
+                                   "material_ids": [material["id"]], "answer": material["answer"]}
+                                  for index, material in enumerate(item.get("materials", []), 1)
+                                  if material.get("answer") not in (None, "")]
         semantic_key = adaptive.task_semantic_key(item)
         if semantic_key and semantic_key in semantic_seen: continue
         item["source"] = "ai"
@@ -570,6 +600,16 @@ def validate_ai_tasks(goal, tasks, settings):
         seen.add(title.casefold()); semantic_seen.add(semantic_key); out.append(item)
         if len(out) >= max(1, int(settings.get("task_count", 3) or 3) + 3): break
     return out
+
+def generation_eval(c, tasks):
+    details = goal_details(c); criteria = _EVALUATION_MOD.criterion_records(details.get("success_criteria", []))
+    if not criteria or not details.get("outcome"):
+        return {"decision":"pass", "first_failing_stage":None}
+    case = {"id":"live-generation", "version":1, "goal":{"id":gid(c),
+            "final_outcome":details.get("outcome"), "success_criteria":criteria,
+            "constraints":details.get("constraints", [])}}
+    return _EVALUATION_MOD.evaluate_generation(case, {"tasks":tasks,
+            "metadata":{"model":"deepseek", "prompt_version":"task-generation-v2"}})
 
 def fit_task_budget(tasks, settings):
     budget=max(5, int(settings.get("available_minutes", 120) or 120))
@@ -660,15 +700,17 @@ def gen_tasks():
         {"role":"user","content":prompt}],1800,0.25,35,1)
     gen_status("解析结果")
     if not isinstance(result,dict): raise AIError("bad_response","AI result must be a JSON object")
-    tasks = validate_ai_tasks(g, result.get("tasks",[]), settings)
+    criterion_ids = [x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
+    tasks = validate_ai_tasks(g, result.get("tasks",[]), settings, criterion_ids)
     adaptive.merge_knowledge_graph(c,result.get("knowledge_graph",{}))
     tasks=[task for task in tasks if adaptive.task_is_unlocked(c,task)]
-    if len(tasks) < settings.get("task_count",3):
+    if len(tasks) < settings.get("task_count",3) or generation_eval(c, tasks).get("decision") != "pass":
+        sample_ai_incident("goal_to_task", "deepseek", goal_details(c).get("success_criteria", []))
         gen_status("修正结果","AI 返回任务不足或偏离目标，正在二次修正")
         repair_prompt = prompt + "\n\ninvalid_result:\n" + json.dumps(result, ensure_ascii=False) + "\nReturn a corrected JSON object with enough valid tasks."
         result = deepseek_json([{"role":"system","content":"Return compact JSON only. Fix the task list so every task directly serves the current goal."},{"role":"user","content":repair_prompt}],1600,0.2,35,1)
         if not isinstance(result,dict): raise AIError("bad_response","AI repair result must be a JSON object")
-        tasks = validate_ai_tasks(g, result.get("tasks",[]), settings)
+        tasks = validate_ai_tasks(g, result.get("tasks",[]), settings, criterion_ids)
         adaptive.merge_knowledge_graph(c,result.get("knowledge_graph",{}))
         tasks=[task for task in tasks if adaptive.task_is_unlocked(c,task)]
     if len(tasks) < settings.get("task_count",3):
@@ -679,6 +721,7 @@ def gen_tasks():
             semantic_key=adaptive.task_semantic_key(x)
             if task_text(x).lower() not in seen and (not semantic_key or semantic_key not in semantic_seen):
                 nt=normalize_task(x, gid(c), len(tasks), False); nt["source"]="fallback_topup"; nt["locked"]=True
+                if criterion_ids: nt["criterion_ids"] = criterion_ids[:]
                 tasks.append(nt); seen.add(task_text(nt).lower()); semantic_seen.add(semantic_key)
     scheduled = adaptive.next_learning_task(c)
     scheduled_key = adaptive.task_semantic_key(scheduled) if scheduled else ""
@@ -686,10 +729,16 @@ def gen_tasks():
             t.get("skill_id") == scheduled["skill_id"] or
             (scheduled_key and adaptive.task_semantic_key(t) == scheduled_key)
             for t in tasks):
-        tasks.insert(0, normalize_task(scheduled, gid(c), 0, False))
+        scheduled = normalize_task(scheduled, gid(c), 0, False)
+        if criterion_ids: scheduled["criterion_ids"] = criterion_ids[:]
+        tasks.insert(0, scheduled)
     if not tasks: return fallback_tasks(c,"AI returned no valid tasks")
     for task in tasks: adaptive.ensure_task_materials(task)
     tasks=fit_task_budget(tasks, settings)
+    quality = generation_eval(c, tasks)
+    if quality.get("decision") != "pass":
+        sample_ai_incident(quality.get("first_failing_stage") or "goal_to_task", "deepseek", criterion_ids)
+        return fallback_tasks(c, "AI quality gate failed")
     latest=ensure_goal_state(lc())
     if generation_guard(latest) != generation_revision:
         gen_status("澶辫触","generation state changed; please retry",mode="conflict")
@@ -721,6 +770,7 @@ def gen_tasks():
 
 def fallback_tasks(c, why):
     g=c.get("goal","目标") or "目标"; s=effective_gen_settings(c); goal_id=gid(c)
+    criterion_ids=[x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
     diagnostics=adaptive.initial_diagnostic_tasks(c,g,s.get("task_count",3))
     if diagnostics: return save_diagnostic_plan(c,diagnostics,"fallback")
     existing=normalize_tasks(c.get("tasks",[]), goal_id, c.get("done_flags",[]))
@@ -731,7 +781,9 @@ def fallback_tasks(c, why):
             t.get("skill_id")==scheduled["skill_id"] or
             (scheduled_key and adaptive.task_semantic_key(t)==scheduled_key)
             for t in raw):
-        raw.insert(0, normalize_task(scheduled, goal_id, 0, False))
+        scheduled=normalize_task(scheduled, goal_id, 0, False)
+        if criterion_ids: scheduled["criterion_ids"]=criterion_ids[:]
+        raw.insert(0, scheduled)
     seen={task_text(t).casefold() for t in raw if task_text(t)}
     semantic_seen={adaptive.task_semantic_key(t) for t in raw if adaptive.task_semantic_key(t)}
     for template in fit_task_budget(fallback_task_templates(g, s), s):
@@ -740,6 +792,7 @@ def fallback_tasks(c, why):
         semantic_key=adaptive.task_semantic_key(template)
         if semantic_key and semantic_key in semantic_seen: continue
         nt=normalize_task(template, goal_id, len(raw), False)
+        if criterion_ids: nt["criterion_ids"]=criterion_ids[:]
         nt["source"]="fallback"; nt["locked"]=True
         raw.append(nt); seen.add(task_text(template).casefold()); semantic_seen.add(semantic_key)
     c["tasks"]=raw
@@ -775,6 +828,9 @@ def evaluate_task(task_idx):
             result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
     passed=result.get("decision")=="accepted"
     result=norm_acceptance_result(result,passed); task["acceptance_result"]=result; task["status"]="done" if passed else "pending"
+    if result["decision"] != "accepted":
+        sample_ai_incident("evidence_to_acceptance", "deepseek" if cloud_enabled else "deterministic",
+                           task.get("criterion_ids", []))
     if result["decision"] in ("accepted","rejected"):
         adaptive.record_learning_outcome(c, task, passed)
         adaptive.record_outcome(c, "accepted" if passed else "failed")

@@ -105,6 +105,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         except Exception: difficulty = 2
         materials = [dict(x) for x in t.get("materials", []) if isinstance(x, dict)] if isinstance(t.get("materials"), list) else []
         interaction = dict(t.get("interaction")) if isinstance(t.get("interaction"), dict) else {}
+        answer_key = [dict(x) for x in t.get("answer_key", []) if isinstance(x, dict)] if isinstance(t.get("answer_key"), list) else []
         response = dict(t.get("response")) if isinstance(t.get("response"), dict) else task_text(t.get("response"))
         return {
             "id": task_text(t.get("id")) or new_id("task"),
@@ -141,11 +142,12 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "next_action": task_text(t.get("next_action")),
             "adjustment_reason": task_text(t.get("adjustment_reason")),
             "skill_id": task_text(t.get("skill_id") or t.get("knowledge_component")),
+            "criterion_ids": [task_text(x) for x in as_list(t.get("criterion_ids")) if task_text(x)],
             "prerequisites": as_list(t.get("prerequisites")),
             "learning_task_type": task_text(t.get("learning_task_type")),
             "review_due_at": task_text(t.get("review_due_at")),
             "recall_rating": task_text(t.get("recall_rating")).lower(),
-            "materials": materials, "interaction": interaction, "response": response,
+            "materials": materials, "answer_key": answer_key, "interaction": interaction, "response": response,
         }
     title = task_text(t)
     return {
@@ -158,9 +160,9 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         "acceptance_result": {}, "difficulty": 2, "source": "legacy", "locked": False,
         "created_at": datetime.now().isoformat(), "started_at": "", "completed_at": "",
         "attempts": 0, "actual_seconds": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
-        "skill_id": "", "prerequisites": [], "learning_task_type": "", "review_due_at": "",
+        "skill_id": "", "criterion_ids": [], "prerequisites": [], "learning_task_type": "", "review_due_at": "",
         "recall_rating": "",
-        "materials": [], "interaction": {}, "response": "",
+        "materials": [], "answer_key": [], "interaction": {}, "response": "",
     }
 
 

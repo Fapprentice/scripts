@@ -27,6 +27,7 @@ The product loop is: define and clarify a goal → establish measurable standard
 - **Agent workspace**: file and command tools are restricted to the existing directory selected in Settings
 - **Multi-goal isolation**: each goal gets independent tasks, apps, completion percentage, and catalog
 - **Learning loop**: FSRS review scheduling, recall-quality feedback, ability diagnostics, and a per-goal knowledge graph
+- **AI quality gates**: 26 versioned golden cases score goal quality, task alignment, material/key grounding, evidence acceptance, semantic uncertainty, and repeat stability before release
 - **Review view**: daily summary, knowledge graph, current-month execution heatmap with access to the most recent 12 months, and popup history logs
 - **Crash recovery**: detects unclean exit on next launch and warns the user
 - **Single instance**: PID file + Windows Mutex dual guard; duplicate startups focus or reopen the existing window
@@ -40,6 +41,8 @@ The product loop is: define and clarify a goal → establish measurable standard
 - CI mode (`python task-panel.pyw --ci`) intentionally uses a random port. Pass that URL explicitly as `TASKVERGE_TEST_URL` when running API or browser tests.
 - API and browser E2E suites claim the single backend session; run them against separate CI instances (or run the suites separately).
 - The default test command is safe and does not attach to the user's live instance: `python -m pytest -q tests`.
+- The AI release gate is `python evaluation.py --run`; it exits non-zero on a regression and is enforced by GitHub Actions.
+- AI quality evaluation is a backend and CI capability; it adds no page, button, modal, or first-screen content to the desktop UI.
 
 ## Runtime modes
 
@@ -62,6 +65,7 @@ The product loop is: define and clarify a goal → establish measurable standard
 - `%LOCALAPPDATA%\TaskVerge\boot.log`: startup diagnostics log
 - `%LOCALAPPDATA%\TaskVerge\watchdog.log`: start/stop/error log
 - `%LOCALAPPDATA%\TaskVerge\task-verge.key`: current-user DPAPI-encrypted DeepSeek key (never written to `.env`)
+- `%LOCALAPPDATA%\TaskVerge\eval-samples.jsonl`: privacy-safe AI incident metadata; raw goal, answer, material, and evidence content is not retained by default
 
 ## Main views
 

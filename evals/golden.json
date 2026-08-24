@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "version": 1,
+    "slices": ["general"],
+    "goal": {
+      "id": "goal-default",
+      "final_outcome": "交付一个可检查的结果",
+      "success_criteria": [{"id": "c1", "text": "结果可检查"}],
+      "constraints": ["每天 30 分钟"]
+    },
+    "artifact": {
+      "tasks": [{
+        "id": "t1", "title": "完成最小结果", "description": "完成并检查结果",
+        "criterion_ids": ["c1"], "estimated_minutes": 20,
+        "expected_output": "可检查结果", "acceptance": "结果存在且可检查",
+        "materials": [{"id": "m1", "type": "prompt", "content": "完成指定结果"}],
+        "answer_key": [{"id": "k1", "material_ids": ["m1"], "criterion_id": "c1", "answer": "完成"}]
+      }],
+      "evidence": [{"task_id": "t1", "criterion_ids": ["c1"], "content": "完成"}],
+      "acceptance": {"decision": "accepted", "criterion_ids": ["c1"]},
+      "metadata": {"model": "golden", "prompt_version": "v1"}
+    },
+    "expected": {"decision": "pass"}
+  },
+  "cases": [
+    {"id": "happy-general-01", "risk_tags": ["happy_path"]},
+    {"id": "happy-learning-02", "slices": ["learning"], "risk_tags": ["happy_path"]},
+    {"id": "happy-code-03", "slices": ["code"], "risk_tags": ["happy_path"]},
+    {"id": "irrelevant-task-04", "risk_tags": ["irrelevant_task"], "expected": {"decision": "fail"}, "artifact": {"tasks": [{"id": "t1", "title": "无关任务", "description": "整理桌面", "criterion_ids": [], "estimated_minutes": 10, "expected_output": "清单", "acceptance": "清单存在"}]}},
+    {"id": "criterion-omission-05", "risk_tags": ["criterion_omission"], "goal": {"success_criteria": [{"id": "c1", "text": "结果可检查"}, {"id": "c2", "text": "结果可复现"}]}, "expected": {"decision": "fail"}},
+    {"id": "missing-materials-06", "risk_tags": ["missing_materials"], "expected": {"decision": "fail"}, "artifact": {"tasks": [{"id": "t1", "title": "完成题目", "description": "回答给定题目", "criterion_ids": ["c1"], "estimated_minutes": 20, "expected_output": "答案", "acceptance": "答案正确", "requires_materials": true, "materials": []}]}},
+    {"id": "unsupported-key-07", "risk_tags": ["unsupported_key"], "expected": {"decision": "fail"}, "artifact": {"tasks": [{"id": "t1", "title": "回答", "description": "回答材料", "criterion_ids": ["c1"], "estimated_minutes": 20, "expected_output": "答案", "acceptance": "正确", "materials": [{"id": "m1", "type": "prompt", "content": "问题"}], "answer_key": [{"id": "k1", "material_ids": ["missing"], "criterion_id": "c1", "answer": "答案"}]}]}},
+    {"id": "false-acceptance-08", "risk_tags": ["false_acceptance"], "expected": {"decision": "fail"}, "artifact": {"evidence": [], "acceptance": {"decision": "accepted", "criterion_ids": ["c1"]}}},
+    {"id": "contradiction-09", "risk_tags": ["contradiction"], "goal": {"constraints": ["不得使用云端", "必须仅云端执行"]}, "expected": {"decision": "fail"}},
+    {"id": "paraphrase-a-10", "risk_tags": ["paraphrase"], "repeat_group": "paraphrase-1"},
+    {"id": "paraphrase-b-11", "risk_tags": ["paraphrase"], "repeat_group": "paraphrase-1", "goal": {"final_outcome": "产出一个能够被验证的成果"}},
+    {"id": "ambiguous-12", "risk_tags": ["ambiguous"], "semantic_checks": [{"id": "semantic-relevance", "stage": "goal_to_task", "rubric": "任务是否直接服务最终成果"}], "expected": {"decision": "needs_review"}},
+    {"id": "budget-edge-13", "risk_tags": ["budget"], "slices": ["time_limited"]},
+    {"id": "dependency-order-14", "risk_tags": ["dependency_order"], "slices": ["multi_task"]},
+    {"id": "material-leakage-15", "risk_tags": ["leakage"], "slices": ["learning"]},
+    {"id": "evidence-format-16", "risk_tags": ["evidence_format"], "slices": ["file"]},
+    {"id": "code-behavior-17", "risk_tags": ["false_acceptance"], "slices": ["code"]},
+    {"id": "multilingual-18", "risk_tags": ["slice_coverage"], "slices": ["zh_en"]},
+    {"id": "reordered-a-19", "risk_tags": ["paraphrase"], "repeat_group": "order-1"},
+    {"id": "reordered-b-20", "risk_tags": ["paraphrase"], "repeat_group": "order-1"},
+    {"id": "irrelevant-material-21", "risk_tags": ["material_relevance"], "slices": ["learning"]},
+    {"id": "open-ended-review-22", "risk_tags": ["ambiguous"], "semantic_checks": [{"id": "open-quality", "stage": "evidence_to_acceptance", "rubric": "开放答案是否满足成功标准"}], "expected": {"decision": "needs_review"}},
+    {"id": "high-impact-review-23", "risk_tags": ["human_review"], "slices": ["high_impact"]},
+    {"id": "repeat-stability-24", "risk_tags": ["stability"], "repeat_group": "stable-1"},
+    {"id": "repeat-stability-25", "risk_tags": ["stability"], "repeat_group": "stable-1"},
+    {"id": "repeat-stability-26", "risk_tags": ["stability"], "repeat_group": "stable-1"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "judge_model": "pinned-at-run-time",
+  "rubric_version": "semantic-v1",
+  "labels": [
+    {"id":"cal-01","slice":"goal_task","reviewer_a":"pass","reviewer_b":"pass","adjudicated":"pass","judge":"pass"},
+    {"id":"cal-02","slice":"goal_task","reviewer_a":"fail","reviewer_b":"fail","adjudicated":"fail","judge":"fail"},
+    {"id":"cal-03","slice":"goal_task","reviewer_a":"needs_review","reviewer_b":"needs_review","adjudicated":"needs_review","judge":"needs_review"},
+    {"id":"cal-04","slice":"material_key","reviewer_a":"pass","reviewer_b":"pass","adjudicated":"pass","judge":"pass"},
+    {"id":"cal-05","slice":"material_key","reviewer_a":"fail","reviewer_b":"fail","adjudicated":"fail","judge":"fail"},
+    {"id":"cal-06","slice":"material_key","reviewer_a":"fail","reviewer_b":"needs_review","adjudicated":"fail","judge":"needs_review"},
+    {"id":"cal-07","slice":"open_answer","reviewer_a":"pass","reviewer_b":"pass","adjudicated":"pass","judge":"pass"},
+    {"id":"cal-08","slice":"open_answer","reviewer_a":"fail","reviewer_b":"fail","adjudicated":"fail","judge":"fail"},
+    {"id":"cal-09","slice":"open_answer","reviewer_a":"needs_review","reviewer_b":"fail","adjudicated":"needs_review","judge":"needs_review"},
+    {"id":"cal-10","slice":"zh_en","reviewer_a":"pass","reviewer_b":"pass","adjudicated":"pass","judge":"pass"}
+  ]
+}

@@ -24,6 +24,13 @@ def test_task_execution_materials_survive_normalization():
     assert task["response"] == {"0": "放弃"}
 
 
+def test_task_traceability_survives_normalization():
+    task = utils.normalize_task({"title": "可追溯任务", "criterion_ids": ["criterion-1"],
+                                 "answer_key": [{"id": "key-1", "material_ids": ["material-1"], "answer": "A"}]})
+    assert task["criterion_ids"] == ["criterion-1"]
+    assert task["answer_key"][0]["material_ids"] == ["material-1"]
+
+
 class TestTaskText:
     def test_normal_string(self):
         assert utils.task_text("hello") == "hello"

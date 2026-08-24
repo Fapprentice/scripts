@@ -30,6 +30,7 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 | `apprules.py` | 应用识别与任务应用匹配 |
 | `secretstore.py` | Windows DPAPI 密钥存储 |
 | `applog.py` | 结构化日志 |
+| `evaluation.py` | 五阶段 AI 评测、语义裁判适配、发布门禁、校准与隐私安全抽样 |
 
 `task-panel.pyw` 仍是组合入口，但业务逻辑已拆分到上述模块；它不是“单文件、零依赖”架构。
 
@@ -104,7 +105,15 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 
 所有路径位于 `%LOCALAPPDATA%\TaskVerge`，源代码目录不作为用户数据目录。
 
-## 8. 启动、测试与打包
+## 8. AI 质量评测
+
+`evals/golden.json` 保存版本化黄金集，目前覆盖正常链路以及无关任务、标准遗漏、材料缺失、答案无依据、错误放行、约束冲突、改写稳定性和语义歧义。`evaluation.evaluate_case` 是统一评测接缝，依次产生目标质量、目标到任务、任务到材料、材料到答案、证据到验收五阶段的独立评分；确定性失败优先，语义不确定返回 `needs_review`，不会强制二选一。
+
+发布门禁要求关键回归为 0、材料缺失率为 0、答案无依据率为 0、成功标准覆盖率至少 95%、假放行率不高于 2%，重复组不得发生验收翻转，且三次生成的任务集合重合度至少 80%。`evals/calibration.json` 保存双人复核和裁决标签，用于计算裁判混淆矩阵与假放行率。生成修复和验收未通过会写入不含用户正文的 `eval-samples.jsonl`；只有经过人工裁决的样本才能通过 `promote_sample` 进入回归语料。
+
+该能力只影响后台生成、验收和 CI 发布判断，不增加前端页面、按钮、弹窗或首屏占用；现有三个一级视图和用户操作流程保持不变。
+
+## 9. 启动、测试与打包
 
 ```powershell
 # 桌面运行
@@ -112,6 +121,9 @@ python task-panel.pyw
 
 # 安全的默认测试
 python -m pytest -q tests
+
+# AI 黄金集与发布门禁
+python evaluation.py --run
 
 # 前端语法
 node --check web/app.js
@@ -122,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -ZipOnly
 
 `python task-panel.pyw --ci` 使用随机端口和隔离数据目录，供 API/E2E 测试使用。发布版本由 PyInstaller 构建；安装包额外需要 Inno Setup 6。
 
-## 9. 关键约束
+## 10. 关键约束
 
 - 仅支持 Windows；Win32、托盘、启动目录和 DPAPI 都是平台边界。
 - 任务路径和颗粒度可以根据证据调整，但不能静默降低目标的最终成功标准。
