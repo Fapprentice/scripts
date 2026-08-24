@@ -16,6 +16,14 @@ def test_task_time_uses_fractional_seconds_as_single_source():
     assert utils.task_actual_minutes(task) == 7.75 / 60
 
 
+def test_task_execution_materials_survive_normalization():
+    task = utils.normalize_task({"title": "词义匹配", "materials": [{"prompt": "abandon", "options": ["放弃", "获得"]}],
+                                 "interaction": {"type": "choice"}, "response": {"0": "放弃"}})
+    assert task["materials"][0]["options"] == ["放弃", "获得"]
+    assert task["interaction"]["type"] == "choice"
+    assert task["response"] == {"0": "放弃"}
+
+
 class TestTaskText:
     def test_normal_string(self):
         assert utils.task_text("hello") == "hello"

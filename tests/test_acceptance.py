@@ -45,6 +45,13 @@ class TestAcceptanceRules(unittest.TestCase):
         result = acceptance._r1_has_evidence(self.task)
         self.assertTrue(result.pass_)
 
+    def test_material_answers_are_scored_without_file_upload(self):
+        task = {"materials": [{"type":"question","answer":"A"},{"type":"question","answer":"B"}],
+                "interaction":{"min_score":0.5}, "response":{"0":"A","1":"X"}, "evidence":[]}
+        verdict = acceptance.check_evidence(task, {"text":"", "files":[]})
+        self.assertTrue(verdict.pass_)
+        self.assertIn("1/2", verdict.checks["R0_material_answers"]["detail"])
+
     # ---- R2: files_exist ----
 
     def test_r2_passes_with_no_files(self):

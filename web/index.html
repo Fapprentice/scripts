@@ -108,19 +108,25 @@
       <section class="page" id="settings">
         <div class="panel full">
           <div class="panel-head"><h3>目标与启动</h3><button class="primary" id="saveSettings">保存设置</button></div>
-          <label for="goalsText">目标列表（每行一个）</label>
-          <textarea id="goalsText" class="goal-box" spellcheck="false"></textarea>
-          <details class="privacy-box">
-            <summary>当前目标的完成定义</summary>
-            <div class="gen-settings">
-              <label>最终成果<input id="goalOutcome" placeholder="例如：发布可供 20 人稳定使用的产品"></label>
-              <label>目标日期<input id="goalDeadline" type="date"></label>
-              <label>当前基础<input id="goalBaseline" placeholder="目前已经做到什么"></label>
-              <label>成功标准（每行一条）<textarea id="goalCriteria" rows="3"></textarea></label>
-              <label>现实约束（每行一条）<textarea id="goalConstraints" rows="3"></textarea></label>
-            </div>
-            <p id="goalReadiness" class="hint"></p>
-          </details>
+          <input id="goalsText" type="hidden">
+          <div id="goalCards" class="goal-cards"></div>
+          <button id="addGoal" class="settings-entry">添加目标 <span>＋</span></button>
+          <div id="goalDetailsModal" class="advanced-settings-modal goal-details-modal" hidden>
+            <section class="advanced-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="goalDetailsTitle">
+              <header><div><h2 id="goalDetailsTitle">目标详情</h2><p>把目标定义成可交付、可验收、能在现实中执行的结果。</p></div><button data-close-goal-details aria-label="关闭目标详情">×</button></header>
+              <div class="advanced-settings-body">
+                <div class="gen-settings">
+                  <label>最终成果<input id="goalOutcome" placeholder="最终要交付、通过或达到什么结果"></label>
+                  <label>目标日期<input id="goalDeadline" type="date"></label>
+                  <label>当前基础<input id="goalBaseline" placeholder="目前已经掌握或完成到哪里"></label>
+                  <label>成功标准（每行一条）<textarea id="goalCriteria" rows="4" placeholder="必须可观察、可计数或可验证"></textarea></label>
+                  <label>现实约束（每行一条）<textarea id="goalConstraints" rows="4" placeholder="可用时间、工具、预算、环境或截止期限"></textarea></label>
+                </div>
+                <p id="goalReadiness" class="hint"></p>
+              </div>
+              <footer><button data-close-goal-details>取消</button><button id="saveGoalDetails" class="primary">保存目标</button></footer>
+            </section>
+          </div>
           <button id="openAdvancedSettings" class="settings-entry">详细设置 <span>生成、专注、隐私与数据管理　›</span></button>
           <div id="advancedSettingsModal" class="advanced-settings-modal" hidden>
             <section class="advanced-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="advancedSettingsTitle">

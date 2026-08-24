@@ -103,6 +103,9 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         except Exception: minutes = 30
         try: difficulty = int(t.get("difficulty") or 2)
         except Exception: difficulty = 2
+        materials = [dict(x) for x in t.get("materials", []) if isinstance(x, dict)] if isinstance(t.get("materials"), list) else []
+        interaction = dict(t.get("interaction")) if isinstance(t.get("interaction"), dict) else {}
+        response = dict(t.get("response")) if isinstance(t.get("response"), dict) else task_text(t.get("response"))
         return {
             "id": task_text(t.get("id")) or new_id("task"),
             "goal_id": task_text(t.get("goal_id")) or str(goal_id),
@@ -142,6 +145,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "learning_task_type": task_text(t.get("learning_task_type")),
             "review_due_at": task_text(t.get("review_due_at")),
             "recall_rating": task_text(t.get("recall_rating")).lower(),
+            "materials": materials, "interaction": interaction, "response": response,
         }
     title = task_text(t)
     return {
@@ -156,6 +160,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         "attempts": 0, "actual_seconds": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
         "skill_id": "", "prerequisites": [], "learning_task_type": "", "review_due_at": "",
         "recall_rating": "",
+        "materials": [], "interaction": {}, "response": "",
     }
 
 

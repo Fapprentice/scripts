@@ -7,6 +7,43 @@ from datetime import datetime, timezone
 from fsrs import Card, Rating, Scheduler, State
 from utils import task_actual_minutes
 
+_CET4_WORDS = [
+    ("abandon","放弃"),("ability","能力"),("absence","缺席"),("academic","学术的"),("access","使用权"),
+    ("accompany","陪伴"),("accomplish","完成"),("accurate","准确的"),("adapt","适应"),("adequate","足够的"),
+    ("advocate","提倡"),("allocate","分配"),("alternative","替代方案"),("analyze","分析"),("anticipate","预期"),
+    ("apparent","明显的"),("approach","方法"),("appropriate","合适的"),("assess","评估"),("assume","假设"),
+    ("available","可获得的"),("benefit","益处"),("challenge","挑战"),("circumstance","情况"),("consequence","后果"),
+    ("consume","消耗"),("contribute","贡献"),("decline","下降"),("demonstrate","证明"),("essential","必不可少的")]
+
+def _diagnostic_materials(skill_id):
+    if skill_id == "english.vocabulary":
+        meanings = [meaning for _, meaning in _CET4_WORDS]
+        return ([{"type":"question","prompt":word,"options":[meaning, meanings[(i+7)%30], meanings[(i+13)%30], meanings[(i+19)%30]],"answer":meaning}
+                 for i,(word,meaning) in enumerate(_CET4_WORDS)], {"type":"choice","multiple":False})
+    if skill_id == "english.reading":
+        return ([{"type":"passage","title":"Digital Study Habits","content":"Many students use digital tools to organize learning. The tools are most useful when learners set a clear purpose, remove distractions and review their progress. Technology itself does not guarantee better results; deliberate practice and timely feedback remain essential."},
+                 {"type":"question","prompt":"What makes digital tools most useful?","options":["Clear purpose and review","More screen time","Using many apps","Avoiding feedback"],"answer":"Clear purpose and review"},
+                 {"type":"question","prompt":"What remains essential?","options":["Deliberate practice and feedback","Expensive devices","Longer breaks","Social media"],"answer":"Deliberate practice and feedback"}], {"type":"choice","multiple":False})
+    if skill_id == "english.listening":
+        return ([{"type":"audio_script","title":"Short dialogue","content":"Woman: Have you finished the report? Man: Not yet. I will send it before three this afternoon."},
+                 {"type":"question","prompt":"When will the man send the report?","options":["Before 3 p.m.","Tomorrow morning","At noon","Next week"],"answer":"Before 3 p.m."}], {"type":"choice","multiple":False})
+    if skill_id == "english.writing":
+        return ([{"type":"prompt","title":"Writing prompt","content":"Write 120–180 words on how students can use technology effectively without becoming distracted. Give at least two practical suggestions."}], {"type":"text"})
+    return ([], {"type":"text"})
+
+def ensure_task_materials(task):
+    if task.get("materials"): return task
+    text = " ".join(str(task.get(key, "") or "") for key in ("title", "description", "skill_id")).casefold()
+    skill_id = task.get("skill_id", "")
+    if any(word in text for word in ("词汇识别", "词义匹配", "vocab.recognition")): skill_id = "english.vocabulary"
+    elif "阅读" in text and "诊断" in text: skill_id = "english.reading"
+    elif "听力" in text or "听写" in text: skill_id = "english.listening"
+    elif "写作" in text and "诊断" in text: skill_id = "english.writing"
+    materials, interaction = _diagnostic_materials(skill_id)
+    if materials:
+        task["materials"], task["interaction"] = materials, task.get("interaction") or interaction
+    return task
+
 
 def fallback_task_templates(goal):
     """Concrete offline/top-up tasks for learning goals."""
@@ -21,15 +58,19 @@ def fallback_task_templates(goal):
             {"title": "闭卷默写 10 个目标词汇", "description": "不查资料写出英文、中文释义和一个例句。",
              "type": "recall", "learning_task_type": "recall", "skill_id": "english.vocabulary",
              "estimated_minutes": 15, "expected_output": "10 个词汇、释义和例句",
-             "acceptance": "至少 8 个词汇拼写和释义正确"},
+             "acceptance": "至少 8 个词汇拼写和释义正确",
+             "materials": [{"type":"prompt","title":"本轮目标词汇","content":"abandon, ability, absence, academic, access, accompany, accomplish, accurate, adapt, adequate"}],
+             "interaction": {"type":"text"}},
             {"title": "完成一篇限时阅读并整理错因", "description": "限时完成一篇阅读，记录答案、用时和每道错题原因。",
              "type": "practice", "learning_task_type": "practice", "skill_id": "english.reading",
              "estimated_minutes": 25, "expected_output": "阅读答案、用时、正确率和错因",
-             "acceptance": "完成整篇阅读并为每道错题写出具体原因"},
+             "acceptance": "完成整篇阅读并为每道错题写出具体原因",
+             "materials": _diagnostic_materials("english.reading")[0], "interaction": _diagnostic_materials("english.reading")[1]},
             {"title": "听写一段英语材料并复述", "description": "听写 3 至 5 分钟材料，核对后用自己的话写出要点。",
              "type": "practice", "learning_task_type": "recall", "skill_id": "english.listening",
              "estimated_minutes": 25, "expected_output": "听写文本、修正记录和三条复述要点",
-             "acceptance": "完成听写核对，并准确复述至少三条信息"},
+             "acceptance": "完成听写核对，并准确复述至少三条信息",
+             "materials": _diagnostic_materials("english.listening")[0], "interaction": {"type":"text"}},
         ]
     return [
         {"title": "闭卷写出 5 个核心知识点", "description": "不查资料写出定义、用途和一个例子。",
@@ -59,6 +100,10 @@ def task_consistency_issues(task):
     description = str(task.get("description") or "")
     expected = str(task.get("expected_output") or "")
     issues = []
+    requires_materials = any(marker in " ".join((title, description, expected)) for marker in
+                             ("选择题", "选出", "阅读", "听力", "短文", "材料只播放"))
+    if requires_materials and not task.get("materials"):
+        issues.append("missing_materials")
     if any(marker in title for marker in ("闭卷", "不看资料", "不查资料")) and any(
             marker in description for marker in ("允许先看", "可以查看答案", "可查阅答案", "允许查看")):
         issues.append("closed_book_conflict")
@@ -92,22 +137,26 @@ def _default_diagnostic_dimensions(goal):
     goal = str(goal or "").casefold()
     if any(word in goal for word in ("英语", "四级", "六级", "cet", "ielts", "toefl")):
         return [
-            {"skill_id": "english.vocabulary", "title": "词汇诊断：闭卷默写20个高频词",
-         "description": "不查资料写出20个目标考试高频词的拼写和中文释义，不会的留空。",
-         "estimated_minutes": 15, "expected_output": "20个编号答案及正确数量",
-         "acceptance": "提交20个编号答案，并记录正确数；不会的项目必须保留为空"},
+            {"skill_id": "english.vocabulary", "title": "词汇识别：词义匹配",
+         "description": "从30个四级高频词中选出正确中文释义。",
+         "estimated_minutes": 15, "expected_output": "30个选择题答案",
+         "acceptance": "正确率不低于70%（至少21/30）",
+         "materials": _diagnostic_materials("english.vocabulary")[0], "interaction": {"type":"choice","min_score":0.7}},
             {"skill_id": "english.reading", "title": "阅读诊断：限时完成1篇阅读",
          "description": "按考试时间要求完成1篇阅读，记录每题答案、总用时和正确数。",
          "estimated_minutes": 20, "expected_output": "答案、总用时、正确数和错题位置",
-         "acceptance": "完成整篇阅读并记录可核验的用时与正确数"},
+         "acceptance": "完成整篇阅读并记录可核验的用时与正确数",
+         "materials": _diagnostic_materials("english.reading")[0], "interaction": _diagnostic_materials("english.reading")[1]},
             {"skill_id": "english.listening", "title": "听力诊断：完成1组短对话",
          "description": "材料只播放考试允许的次数，记录每题答案、正确数和未听懂的位置。",
          "estimated_minutes": 15, "expected_output": "答案、正确数和听力盲点",
-         "acceptance": "完成整组听力并记录正确数及至少一个具体盲点"},
+         "acceptance": "完成整组听力并记录正确数及至少一个具体盲点",
+         "materials": _diagnostic_materials("english.listening")[0], "interaction": _diagnostic_materials("english.listening")[1]},
             {"skill_id": "english.writing", "title": "写作诊断：限时完成1篇短文",
          "description": "不使用翻译或生成工具，按考试要求限时完成一篇短文。",
          "estimated_minutes": 30, "expected_output": "完整短文、字数和实际用时",
-         "acceptance": "短文达到目标考试最低字数，并记录用时和自查问题"},
+         "acceptance": "短文达到目标考试最低字数，并记录用时和自查问题",
+         "materials": _diagnostic_materials("english.writing")[0], "interaction": _diagnostic_materials("english.writing")[1]},
         ]
     label = str(goal or "当前目标").strip()
     return [
@@ -140,6 +189,8 @@ def normalize_diagnostic_dimensions(raw, goal=""):
         acceptance = str(item.get("acceptance") or "").strip()
         if len(title) < 2 or len(description) < 6 or not expected or not acceptance:
             continue
+        if "missing_materials" in task_consistency_issues(item):
+            continue
         skill_id = re.sub(r"[^a-z0-9._-]+", ".", str(item.get("skill_id") or "").casefold()).strip(".")
         if not skill_id:
             skill_id = "ability.dimension_{}".format(index + 1)
@@ -147,8 +198,11 @@ def normalize_diagnostic_dimensions(raw, goal=""):
             minutes = max(5, min(60, int(item.get("estimated_minutes", 20) or 20)))
         except (TypeError, ValueError):
             minutes = 20
+        materials = item.get("materials") if isinstance(item.get("materials"), list) else []
+        interaction = item.get("interaction") if isinstance(item.get("interaction"), dict) else {}
         clean.append({"skill_id": skill_id, "title": title, "description": description,
-                      "estimated_minutes": minutes, "expected_output": expected, "acceptance": acceptance})
+                      "estimated_minutes": minutes, "expected_output": expected, "acceptance": acceptance,
+                      "materials": materials, "interaction": interaction})
     unique = []
     seen = set()
     for item in clean:
@@ -191,9 +245,15 @@ def ability_profile(state, goal):
 def initial_diagnostic_tasks(state, goal, limit=3):
     profile = ability_profile(state, goal)
     missing = {item["skill_id"] for item in profile["dimensions"] if not item["assessed"]}
-    return [dict(item, type="diagnostic", learning_task_type="diagnostic", difficulty=2,
-                 verification_mode="strict", source="ability_diagnostic", locked=True)
-            for item in diagnostic_dimensions(goal, state) if item["skill_id"] in missing][:max(1, int(limit or 1))]
+    tasks = []
+    for item in diagnostic_dimensions(goal, state):
+        if item["skill_id"] not in missing: continue
+        materials, interaction = _diagnostic_materials(item["skill_id"])
+        tasks.append(dict(item, materials=item.get("materials") or materials,
+                          interaction=item.get("interaction") or interaction, type="diagnostic",
+                          learning_task_type="diagnostic", difficulty=2, verification_mode="strict",
+                          source="ability_diagnostic", locked=True))
+    return [ensure_task_materials(task) for task in tasks[:max(1, int(limit or 1))]]
 
 
 def _utc(now=None):

@@ -36,11 +36,20 @@ def test_initial_ability_diagnostics_complete_and_record_scores():
     state = {"user_model": {}}
     tasks = learning.initial_diagnostic_tasks(state, "英语四级", 2)
     assert [task["skill_id"] for task in tasks] == ["english.vocabulary", "english.reading"]
+    assert len(tasks[0]["materials"]) == 30
+    assert tasks[0]["interaction"]["type"] == "choice"
+    assert tasks[1]["materials"][0]["type"] == "passage"
     learning.record_learning_outcome(state, dict(tasks[0], recall_rating="good"), True, NOW)
     profile = learning.ability_profile(state, "英语四级")
     assert profile["assessed"] == 1
     assert profile["dimensions"][0]["score"] == 0.7
     assert learning.initial_diagnostic_tasks(state, "英语四级", 2)[0]["skill_id"] == "english.reading"
+
+
+def test_material_dependent_task_is_rejected_without_materials():
+    task = {"title": "从30个四级高频词中选出正确中文释义", "description": "完成30道选择题",
+            "expected_output": "30个答案", "learning_task_type": "diagnostic"}
+    assert "missing_materials" in learning.task_consistency_issues(task)
 
 
 def test_ai_dimensions_are_validated_persisted_and_reused():

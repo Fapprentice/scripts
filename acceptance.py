@@ -39,7 +39,20 @@ def _r1_has_evidence(task):
         return RuleResult(True, f"有 {len(ev)} 个交付物")
     if isinstance(ev, str) and ev.strip():
         return RuleResult(True, "有交付物描述")
+    if task.get("response"):
+        return RuleResult(True, "已提交页面作答")
     return RuleResult(False, "未提交任何交付物或证据")
+
+
+def _r0_material_answers(task, details):
+    questions = [item for item in task.get("materials", []) if isinstance(item, dict) and item.get("answer")]
+    if not questions: return RuleResult(True, "非客观题（跳过自动评分）")
+    response = task.get("response") if isinstance(task.get("response"), dict) else {}
+    correct = sum(str(response.get(str(i), "")).strip() == str(item["answer"]).strip() for i, item in enumerate(task.get("materials", [])) if isinstance(item, dict) and item.get("answer"))
+    try: minimum = max(0, min(1, float((task.get("interaction") or {}).get("min_score", 0.7) or 0.7)))
+    except (TypeError, ValueError): minimum = 0.7
+    score = correct / len(questions)
+    return RuleResult(score >= minimum, "客观题得分 {}/{}（{}%）".format(correct, len(questions), round(score * 100)))
 
 
 def _r2_files_exist(task, details):
@@ -148,6 +161,7 @@ def _r6_acceptance_criteria(task, details):
 # Ordered list of (rule_id, rule_fn, is_hard)
 # Hard rules → FAIL immediately. Soft rules → flag needs_llm.
 _RULES = [
+    ("R0_material_answers", _r0_material_answers, True),
     ("R1_evidence",     _r1_has_evidence,      True),
     ("R2_files_exist",  _r2_files_exist,        True),
     ("R3_py_compile",   _r3_py_compile,         True),
@@ -173,6 +187,12 @@ def check_evidence(task, details):
     """
     if task.get("verification_mode") == "none":
         return AcceptanceVerdict(True, "轻验收：以用户完成确认和专注会话为准", {}, False)
+    objective = any(isinstance(item, dict) and item.get("answer") for item in task.get("materials", []))
+    if objective:
+        result = _r0_material_answers(task, details)
+        return AcceptanceVerdict(result.pass_, result.detail, {"R0_material_answers":{"pass":result.pass_,"detail":result.detail}}, False)
+    if task.get("materials") and task.get("response"):
+        return AcceptanceVerdict(True, "页面作答已提交，需 AI 按题目要求验收", {}, True)
     checks = {}
     failed_hard = False
     fail_reasons = []

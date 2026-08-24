@@ -680,6 +680,20 @@ label {
   font-weight: 600;
 }
 .mission-description { margin: 0 0 var(--sp-2); color: var(--mc-muted); line-height: 1.5; }
+.task-materials { display:grid; gap:8px; max-height:210px; padding:10px; border:1px solid var(--mc-border); border-radius:5px; background:#fafbfc; overflow:auto; }
+.task-material { display:grid; gap:7px; padding:9px 11px; border-radius:5px; background:#fff; }
+.task-material p { margin:0; color:var(--mc-muted); line-height:1.6; }
+.task-material.question > div { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
+.task-material.question button { min-height:34px; padding:5px 8px; background:#fff; }
+.task-material.question button.selected { color:#fff; border-color:#5b5ce2; background:#5b5ce2; }
+.task-response { width:100%; min-height:88px; margin-top:8px; padding:10px 12px; resize:vertical; }
+.materials-entry { display:flex; align-items:center; justify-content:space-between; width:100%; margin:4px 0; padding:10px 12px; text-align:left; background:var(--mc-canvas); }
+.materials-entry span { display:grid; gap:2px; }
+.materials-entry small { color:var(--mc-muted); font-weight:400; }
+.materials-entry em { color:var(--mc-primary); font-style:normal; font-weight:700; }
+.task-materials-modal .advanced-settings-dialog { width:min(1040px,calc(100vw - 48px)); }
+.task-materials-modal { align-items:center; justify-content:center; }
+.task-materials-modal .task-materials { max-height:none; padding:0; border:0; background:transparent; overflow:visible; }
 
 /* P0 fix: next action wraps; no nowrap/ellipsis hard-cut */
 .mission-next {
@@ -1185,6 +1199,14 @@ label {
 /* A1 — 设置页 panel 静态化：工作页不需要"卡片漂浮" hover */
 #settings > .panel { transition: none; }
 #settings > .panel:hover { transform: none; box-shadow: var(--shadow-sm); }
+.goal-cards { display:grid; gap:10px; }
+.goal-card { display:flex; align-items:center; justify-content:space-between; width:100%; min-height:76px; padding:14px 18px; text-align:left; background:var(--mc-panel); }
+.goal-card span { display:grid; gap:6px; }
+.goal-card small { color:var(--mc-muted); font-weight:400; }
+.goal-card em { color:var(--mc-muted); font-style:normal; }
+.goal-card.active { border-color:var(--mc-primary); box-shadow:0 0 0 2px var(--mc-primary-soft); }
+.goal-details-modal { align-items:center; justify-content:center; }
+#advancedSettingsModal { align-items:center; justify-content:center; }
 
 /* A10-2 — 设置页输入框凹陷底色（light/dark 两主题一致的输入对比） */
 #settings input, #settings select, #settings textarea,
@@ -1522,6 +1544,10 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task { grid-template-columns: 24px minmax(0, 1fr) auto; padding: 10px 12px; }
   .feedback-ledger { min-height: 0; }
   .heatmap-month div { grid-template-columns: repeat(7, minmax(20px, 25px)); gap: 3px; }
+}
+
+@media (min-width: 821px) and (max-height: 800px) {
+  .task-materials { max-height: 120px; }
 }
 
 /* ============================================================

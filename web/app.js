@@ -333,10 +333,12 @@ function promptDlg(message, initial=''){
       m.innerHTML='<div class="modal-box"><h3 class="modal-title">请输入</h3><p class="modal-msg"></p><input class="modal-input"><div class="modal-actions"><button data-cancel>取消</button><button class="primary" data-ok>确定</button></div></div>';
       document.body.appendChild(m);
       m.addEventListener('click', e=>{
-        if(e.target.dataset.ok!==undefined){ const v=$('.modal-input',m).value.trim(); closeModal(m); resolve(v); }
-        else if(e.target.dataset.cancel!==undefined || e.target===m){ closeModal(m); resolve(''); }
+        if(e.target.dataset.ok!==undefined){ const v=$('.modal-input',m).value.trim(); closeModal(m); m._resolve?.(v); }
+        else if(e.target.dataset.cancel!==undefined || e.target===m){ closeModal(m); m._resolve?.(''); }
       });
+      $('.modal-input',m).addEventListener('keydown',e=>{ if(e.key==='Enter') m.querySelector('[data-ok]').click(); });
     }
+    m._resolve=resolve;
     $('.modal-msg',m).textContent=message; const input=$('.modal-input',m); input.value=initial;
     openModal(m); input.focus();
   });
@@ -481,7 +483,7 @@ function renderBreakWidget(){
 let _breakWasActive = false;
 function updateBreakCountdown(){
   const info = $('#breakInfo');
-  if(!info) return;
+  if(!info || !state) return;
   if(state.break_active){
     const active = activeBreak();
     if(active){
@@ -496,6 +498,8 @@ function updateBreakCountdown(){
   if(_breakWasActive){ _breakWasActive = false; renderBreakWidget(); }  // break just ended -> restore widget
 }
 function render(){
+  const goalDetailsModal=$('#goalDetailsModal');
+  if(goalDetailsModal?.closest('.shell')) document.body.appendChild(goalDetailsModal);
   localizeShell();
   updateClock();
   const doingTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
@@ -505,6 +509,10 @@ function render(){
   $('#goal').textContent = state.goal || '尚未设置目标';
   if($('#goalSelectTop')) $('#goalSelectTop').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   $('#goalsText').value = (state.goals && state.goals.length ? state.goals : (state.goal ? [state.goal] : [])).join('\n');
+  if($('#goalCards')) $('#goalCards').innerHTML=(state.goal_records||[]).map((g,i)=>{
+    const criteria=(g.success_criteria||[]).length, constraints=(g.constraints||[]).length;
+    return `<button class="goal-card ${i===state.active_goal?'active':''}" data-edit-goal="${i}"><span><b>${escapeHtml(g.title)}</b><small>${escapeHtml(g.outcome||'尚未填写最终成果')}</small></span><em>${criteria?'标准 '+criteria:'缺少标准'} · ${constraints?'约束 '+constraints:'缺少约束'}　›</em></button>`;
+  }).join('');
   const gd=state.goal_details||{};
   if($('#goalOutcome')) $('#goalOutcome').value=gd.outcome||'';
   if($('#goalDeadline')) $('#goalDeadline').value=gd.deadline||'';
@@ -657,21 +665,45 @@ function renderCurrentTaskBar(){
   const taskMeta=[typeName(task.type),task.estimated_minutes?`${task.estimated_minutes} 分钟`:'',task.difficulty?`难度 ${task.difficulty}`:'',task.milestone||'',task.skill_id||''].filter(Boolean);
   const taskStatusLabel={doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延'}[task.status]||'待开始';
   const timerText=formatFocusElapsed(task);
+  const materials=(task.materials||[]).map((item,materialIdx)=>{
+    if(item.type==='passage'||item.type==='prompt') return `<section class="task-material source"><b>${escapeHtml(item.title||'任务材料')}</b><p>${escapeHtml(item.content||'')}</p></section>`;
+    if(item.type==='audio_script') return `<section class="task-material source"><b>${escapeHtml(item.title||'听力材料')}</b><button data-speak-material="${materialIdx}">▶ 播放材料</button></section>`;
+    if(item.type==='question'){
+      const selected=(task.response||{})[String(materialIdx)]||'';
+      return `<section class="task-material question"><b>${materialIdx+1}. ${escapeHtml(item.prompt||'')}</b><div>${(item.options||[]).map(option=>`<button class="${selected===option?'selected':''}" data-material-choice="${materialIdx}" data-material-value="${escapeHtml(option)}">${escapeHtml(option)}</button>`).join('')}</div></section>`;
+    }
+    return `<section class="task-material source"><b>${escapeHtml(item.title||'任务材料')}</b><p>${escapeHtml(item.content||item.prompt||'')}</p></section>`;
+  }).join('');
+  const responseBox=(task.interaction||{}).type==='text'?`<textarea class="task-response" data-task-response="${idx}" placeholder="在这里完成作答">${escapeHtml(typeof task.response==='string'?task.response:'')}</textarea>`:'';
+  const materialCount=(task.materials||[]).filter(item=>item.type==='question').length;
+  const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
+  const evidenceBox=materials?'':`<h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label>`;
   bar.className='current-task-bar mission-task';
   bar.innerHTML=`<div class="mission-head"><b>当前任务</b></div><article class="mission-card">
     <div class="mission-status"><span><i></i>${taskStatusLabel}${task.status==='doing'&&task.started_at?`　<small>开始于 ${new Date(task.started_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</small>`:''}</span><button data-goto-queue>查看历史任务</button></div>
     <div class="mission-title"><h2>${escapeHtml(title)}</h2><div><small>已用时</small><strong id="focusElapsed" data-started="${task.status==='doing'?escapeHtml(task.started_at||''):''}" data-actual="${Number(task.actual_seconds)||0}">${timerText}</strong><span>◷　预计 ${Number(task.estimated_minutes)||45}:00</span></div></div>
     <div class="mission-meta">${taskMeta.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div>
     ${task.description?`<p class="mission-description">${escapeHtml(task.description)}</p>`:''}
+    ${materialEntry}
     <h4>下一步行动</h4><p class="mission-next">${escapeHtml(next)}</p>
     <div class="mission-info">
       <div><b>交付物</b><span>${escapeHtml(task.expected_output||task.done_definition||'提交可检查的结果')}</span></div>
       <div><b>验收标准</b><span>${escapeHtml(task.acceptance||done)}</span></div>
     </div>
     ${task.skill_id?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
-    <h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label>
+    ${evidenceBox}
     <footer>${task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`}</footer>
   </article>`;
+  let modal=$('#taskMaterialsModal');
+  if(modal) modal.remove();
+  if(materials){
+    modal=document.createElement('div');
+    modal.id='taskMaterialsModal';
+    modal.className='advanced-settings-modal task-materials-modal';
+    modal.hidden=true;
+    modal.innerHTML=`<section class="advanced-settings-dialog"><header><div><h2>任务材料</h2><p>${escapeHtml(title)}${materialCount?` · ${materialCount} 道题`:''}</p></div><button data-close-materials aria-label="关闭">×</button></header><div class="advanced-settings-body"><div class="task-materials">${materials}</div>${responseBox}</div><footer><button class="primary" data-close-materials>完成</button></footer></section>`;
+    document.body.appendChild(modal);
+  }
 }
 
 function renderSessionControls(){
@@ -1022,7 +1054,8 @@ function normalizeState(data){
     return text === '[object Object]' ? '' : text;
   };
   data.goal = goalText(data.goal);
-  data.goals = (data.goals || []).map(goalText);
+  data.goal_records = (data.goals || []).map((g,i)=>typeof g==='object'?g:{id:`goal_${i}`,title:goalText(g)});
+  data.goals = data.goal_records.map(goalText);
   return data;
 }
 async function refreshFg(){
@@ -1143,6 +1176,50 @@ async function run(name){
   }
 }
 document.addEventListener('click', async e=>{
+  const editGoal=e.target.closest?.('[data-edit-goal]');
+  if(editGoal){
+    const idx=+editGoal.dataset.editGoal;
+    if(idx!==state.active_goal){ await api('active-goal',{active_goal:idx}); await load(); }
+    $('#goalDetailsTitle').textContent=state.goals[idx]||'目标详情';
+    setModalOpen($('#goalDetailsModal'),true); return;
+  }
+  if(e.target.closest?.('[data-close-goal-details]')||e.target.id==='goalDetailsModal'){
+    setModalOpen($('#goalDetailsModal'),false); return;
+  }
+  if(e.target.id==='addGoal'){
+    const title=(await promptDlg('新目标名称'))?.trim();
+    if(!title) return;
+    if((state.goals||[]).includes(title)){ showModal('目标已存在','请使用不同的目标名称。','warn'); return; }
+    const goals=[...(state.goals||[]),title];
+    $('#goalsText').value=goals.join('\n');
+    $('#goalsText').dataset.pendingActive=String(goals.length-1);
+    $('#goalsText').dataset.openAfterSave='1';
+    ['goalOutcome','goalDeadline','goalBaseline','goalCriteria','goalConstraints'].forEach(id=>{ const field=$(`#${id}`); if(field) field.value=''; });
+    $('#saveSettings').click(); return;
+  }
+  if(e.target.id==='saveGoalDetails'){
+    $('#saveSettings').click(); setModalOpen($('#goalDetailsModal'),false); return;
+  }
+  const openMaterials=e.target.closest?.('[data-open-materials]');
+  if(openMaterials){ setModalOpen($('#taskMaterialsModal'),true); return; }
+  if(e.target.closest?.('[data-close-materials]')||e.target.id==='taskMaterialsModal'){
+    setModalOpen($('#taskMaterialsModal'),false); return;
+  }
+  const choice=e.target.closest?.('[data-material-choice]');
+  if(choice){
+    const task=(state.tasks||[]).find(t=>!t.done&&t.status==='doing')||(state.tasks||[]).find(t=>!t.done&&t.status!=='skipped');
+    if(!task) return;
+    const idx=state.tasks.indexOf(task), response={...(task.response||{}),[choice.dataset.materialChoice]:choice.dataset.materialValue};
+    task.response=response;
+    choice.parentElement.querySelectorAll('button').forEach(button=>button.classList.toggle('selected',button===choice));
+    await api('task-response',{idx,response}); return;
+  }
+  const speak=e.target.closest?.('[data-speak-material]');
+  if(speak){
+    const task=(state.tasks||[]).find(t=>!t.done&&t.status==='doing')||(state.tasks||[]).find(t=>!t.done&&t.status!=='skipped'), text=task?.materials?.[+speak.dataset.speakMaterial]?.content;
+    if(text&&window.speechSynthesis){ speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); }
+    return;
+  }
   const reviewLog=e.target.closest?.('[data-review-log]');
   if(reviewLog){
     const mode=reviewLog.dataset.reviewLog, events=mode==='events', archives=mode==='archives', modal=$('#reviewLogModal');
@@ -1303,6 +1380,13 @@ document.addEventListener('click', async e=>{
   if(e.target.id==='evaluate') return run('evaluate');
   if(e.target.dataset.aiEvaluate!==undefined){
     const idx=+e.target.dataset.aiEvaluate, t=state.tasks[idx] || {};
+    if((t.materials||[]).length){
+      const response=t.response||'';
+      if(!response || (typeof response==='object'&&!Object.keys(response).length)){ showModal('不能验收','请先完成页面中的题目或作答。','warn'); return; }
+      await api('task-response',{idx,response});
+      const r=await api('evaluate-task',{idx}); await load();
+      const detail=r.result||{}; showModal(r.pass?'验收通过':'需要补交',detail.reason||'验收完成',r.pass?'success':'warn'); return;
+    }
     let evidence=t.evidence || await askEvidence();
     if(!evidence){ e.target.checked=!!t.done; showModal('不能验收', '未提交交付物或证据。请先上传交付物，或填写文件路径/链接/完成说明。', 'warn'); return; }
     await api('task-evidence',{idx,evidence});
@@ -1341,7 +1425,11 @@ document.addEventListener('click', async e=>{
     const goals=$('#goalsText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
     if(!goals.length){ showModal('无法保存','请至少设置一个目标。','warn'); return; }
     const current=state.goals?.[state.active_goal||0];
-    const active=Math.max(0, goals.indexOf(current));
+    const pendingActive=$('#goalsText').dataset.pendingActive;
+    const openAfterSave=$('#goalsText').dataset.openAfterSave==='1';
+    const active=pendingActive===undefined?Math.max(0,goals.indexOf(current)):+pendingActive;
+    delete $('#goalsText').dataset.pendingActive;
+    delete $('#goalsText').dataset.openAfterSave;
     await api('settings',{goals,active_goal:active,autostart:$('#autostart').checked,goal_details:{
       outcome:$('#goalOutcome')?.value.trim()||'', deadline:$('#goalDeadline')?.value||'',
       baseline:$('#goalBaseline')?.value.trim()||'',
@@ -1361,6 +1449,7 @@ document.addEventListener('click', async e=>{
       diagnostic_log_verbose:!!$('#privacyLogVerbose')?.checked
     },focus_guard:{enabled:!!$('#focusGuardEnabled')?.checked},schedule:{focus_template:$('#focusTemplate')?.value || '90'},workspace:$('#workspace')?.value.trim()||''});
     toast('设置已保存'); await load();
+    if(openAfterSave){ $('#goalDetailsTitle').textContent=state.goal||'目标详情'; setModalOpen($('#goalDetailsModal'),true); }
   }
   if(e.target.id==='pauseFocus30'){
     await api('focus-policy',{action:'pause',minutes:30}); toast('已暂停专注 30 分钟'); await load(); return;
@@ -1435,6 +1524,10 @@ document.addEventListener('click', async e=>{
   }
 });
 document.addEventListener('change', async e=>{
+  if(e.target.dataset.taskResponse!==undefined){
+    const idx=+e.target.dataset.taskResponse, response=e.target.value.trim();
+    state.tasks[idx].response=response; await api('task-response',{idx,response}); return;
+  }
   if(e.target.dataset.evidenceFile!==undefined){
     await uploadEvidenceFile(+e.target.dataset.evidenceFile, e.target);
     return;

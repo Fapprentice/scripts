@@ -240,7 +240,7 @@ def ensure_goal_state(c):
         c["last_review"] = {}; c["next_cycle_context"] = {}
         c["blocklist"] = []
     c["tasks"] = normalize_tasks(c.get("tasks", []), key, c.get("done_flags", []))
-    for task in c["tasks"]: task["goal_id"] = key
+    for task in c["tasks"]: task["goal_id"] = key; adaptive.ensure_task_materials(task)
     sync_pct(c)
     c["task_gen"] = gen_settings(c)
     return c
@@ -502,13 +502,15 @@ def ensure_ability_dimensions(c):
         gen_status("分析能力维度","根据目标建立稳定、可测量的能力模型")
         try:
             result=deepseek_json([
-                {"role":"system","content":"你是能力测量设计专家。只返回紧凑 JSON，不要 Markdown。维度必须互不重叠、覆盖目标核心能力，并能通过短任务测量。"},
+                {"role":"system","content":"你是能力测量设计专家。只返回紧凑 JSON，不要 Markdown。维度必须互不重叠、覆盖目标核心能力，并能通过短任务测量。凡任务引用题目、文章、案例、数据或代码，必须在 materials 中完整提供。"},
                 {"role":"user","content":json.dumps({
                     "goal":goal,"goal_details":goal_details(c),
                     "requirements":{"dimension_count":"3-6","stable":True,"measurable":True,
                         "schema":{"dimensions":[{"skill_id":"ascii.stable.id","title":"能力名：诊断动作",
                             "description":"无需帮助完成的具体诊断","estimated_minutes":20,
-                            "expected_output":"可检查产出","acceptance":"包含数量或清晰判定标准"}]}}
+                            "expected_output":"可检查产出","acceptance":"包含数量或清晰判定标准",
+                            "materials":[{"type":"question|passage|prompt|data|code","content":"","prompt":"","options":[],"answer":""}],
+                            "interaction":{"type":"choice|text","min_score":0.7}}]}}
                 },ensure_ascii=False)}
             ],1200,0.1,30,1)
             dimensions=adaptive.normalize_diagnostic_dimensions(result,goal)
@@ -534,7 +536,7 @@ def build_task_prompt(c):
         "ability_profile": adaptive.ability_profile(c, c.get("goal", "")),
         "learning_policy": {
             "sequence": ["diagnostic", "recall", "practice", "explain", "transfer"],
-            "rule": "If mastery is unknown, generate a diagnostic task first. Every learning task must include skill_id and require an answer produced without copying source material.",
+            "rule": "If mastery is unknown, generate a diagnostic task first. Every task that refers to questions, source text, data, code, cases or other inputs must include those inputs in materials; never ask the user to find them.",
         },
         "unfinished_tasks": task_payload(unfinished_items),
         "history": lh()[-5:], "settings": settings,
@@ -544,7 +546,8 @@ def build_task_prompt(c):
                              "daily_strategy": "", "tasks": [{"title": "", "description": "", "type": "practice",
                              "estimated_minutes": 30, "expected_output": "", "acceptance": "", "required_apps": [],
                              "allowed_apps": [], "depends_on": [], "skill_id": "", "prerequisites": [],
-                             "learning_task_type": "recall"}]},
+                             "learning_task_type": "recall", "materials": [{"type":"question|passage|audio_script|prompt|data|code","title":"","content":"","prompt":"","options":[],"answer":""}],
+                             "interaction": {"type":"choice|text","min_score":0.7}}]},
     }
     return settings, json.dumps(prompt, ensure_ascii=False)
 
@@ -580,7 +583,7 @@ def fit_task_budget(tasks, settings):
         if total>=budget: break
     return out or list(tasks[:1] if tasks else [])
 
-def evidence_details(evidence):
+def evidence_details(evidence, response=""):
     paths = valid_evidence_paths(evidence)
     files = []
     for path in paths:
@@ -591,7 +594,8 @@ def evidence_details(evidence):
                 item["python_check"] = {"ok": r.returncode == 0, "stderr": (r.stderr or "")[-500:]}
             except Exception as e: item["python_check"] = {"ok": False, "error": str(e)}
         files.append(item)
-    return {"files": files, "count": len(files)}
+    response_text=json.dumps(response,ensure_ascii=False) if isinstance(response,(dict,list)) else task_text(response)
+    return {"files": files, "count": len(files), "text": response_text}
 
 def valid_evidence_paths(evidence):
     root=os.path.abspath(P["uploads"])
@@ -684,6 +688,7 @@ def gen_tasks():
             for t in tasks):
         tasks.insert(0, normalize_task(scheduled, gid(c), 0, False))
     if not tasks: return fallback_tasks(c,"AI returned no valid tasks")
+    for task in tasks: adaptive.ensure_task_materials(task)
     tasks=fit_task_budget(tasks, settings)
     latest=ensure_goal_state(lc())
     if generation_guard(latest) != generation_revision:
@@ -758,13 +763,13 @@ def reset_task_timer(task):
 def evaluate_task(task_idx):
     c=ensure_goal_state(lc()); items=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
     if task_idx<0 or task_idx>=len(items): raise ValueError("任务索引越界")
-    task=items[task_idx]; evidence=as_list(task.get("evidence")); cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled",True))
+    task=items[task_idx]; evidence=as_list(task.get("evidence")); response=task.get("response"); cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled",True))
     if task.get("skill_id") and not task.get("recall_rating"):
         raise ValueError("请先选择回忆质量：忘记、困难、正常或轻松")
-    if not evidence and task.get("verification_mode")!="none":
+    if not evidence and not response and task.get("verification_mode")!="none":
         result=norm_acceptance_result({"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验证据"],"next_steps":["上传交付物后重新验收"]})
     else:
-        details=evidence_details(evidence); verdict=_ACCEPTANCE_MOD.check_evidence(task,details)
+        details=evidence_details(evidence,response); verdict=_ACCEPTANCE_MOD.check_evidence(task,details)
         result=_ACCEPTANCE_MOD.verdict_to_acceptance_result(verdict)
         if result.get("needs_llm") and cloud_enabled and valid_deepseek_key(dk()):
             result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
@@ -785,7 +790,7 @@ def cli_eval():
         return print("FAIL cloud ai disabled (evaluate)")
     items=normalize_tasks(c.get("tasks",[]), gid(c), c.get("done_flags",[]))
     if not items: return print("SKIP no tasks")
-    no_evidence=[not as_list(t.get("evidence")) and t.get("verification_mode") != "none" for t in items]
+    no_evidence=[not as_list(t.get("evidence")) and not t.get("response") and t.get("verification_mode") != "none" for t in items]
     if all(no_evidence):
         results=[norm_acceptance_result({"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验说明"],"next_steps":["上传交付物后重新点击 AI 验收"]}) for _ in items]
         ah({"date":today(),"goal":c.get("goal",""),"goal_id":gid(c),"tasks":items,"completion_pct":0,"summary":"未提交交付物或证据，AI 未放行","acceptance_results":results})
@@ -795,7 +800,7 @@ def cli_eval():
     k = dk()
     today_s = date.today().isoformat()
     fg = lf()
-    details=[evidence_details(t.get("evidence",[]) if isinstance(t.get("evidence"), list) else t.get("evidence","")) for t in items]
+    details=[evidence_details(t.get("evidence",[]) if isinstance(t.get("evidence"), list) else t.get("evidence",""),t.get("response")) for t in items]
     fg_top=dict(sorted(fg.items(),key=lambda x:-x[1])[:12])
     cloud_fg=fg_top if c.get("privacy",{}).get("share_foreground_with_ai",False) else {}
 
@@ -1879,6 +1884,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if len(evidence)!=len(as_list(data.get("evidence",""))): return self.send_json({"ok":False,"message":"交付物必须来自 Task Verge 上传目录"},400)
                 ts[i]["evidence"]=evidence; c["tasks"]=ts
                 save_goal_state(c); evlog(c,"task_evidence","更新验收证据列表",{"idx":i}); sc(c); return self.send_json({"ok":True})
+            if self.path=="/api/task-response":
+                try: i=int(data.get("idx",0))
+                except (TypeError,ValueError): return self.send_json({"ok":False,"message":"任务索引必须是数字"},400)
+                ts=normalize_tasks(c.get("tasks",[]), gid(c), c.get("done_flags",[]))
+                if i<0 or i>=len(ts): return self.send_json({"ok":False,"message":"任务索引越界"},400)
+                response=data.get("response","")
+                if not isinstance(response,(str,dict)): return self.send_json({"ok":False,"message":"作答格式无效"},400)
+                if len(json.dumps(response,ensure_ascii=False))>20000: return self.send_json({"ok":False,"message":"作答内容过长"},400)
+                ts[i]["response"]=response; c["tasks"]=ts
+                save_goal_state(c); evlog(c,"task_response","保存页面作答",{"idx":i}); sc(c); return self.send_json({"ok":True})
             if self.path=="/api/task-rating":
                 try: i=int(data.get("idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"任务索引必须是数字"},400)

@@ -8,7 +8,7 @@ from datetime import datetime
 from learning import (ability_profile, diagnostic_dimensions, due_review_task, fallback_task_templates as learning_fallback_templates, initial_diagnostic_tasks, is_generic_planning_task, knowledge_graph, learning_focus, merge_knowledge_graph, next_learning_task,
                       normalize_diagnostic_dimensions, set_diagnostic_dimensions,
                       task_consistency_issues, task_semantic_key,
-                      record_learning_outcome, sync_task_graph, task_is_unlocked)
+                      record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials)
 from utils import task_actual_minutes
 
 
