@@ -3,9 +3,8 @@ let focusStatusPill = null;
 let allApps = [];
 let usableApps = [];
 let activePage = 'dashboard';
-let sessionToken = null;
-let sessionClaimPromise = null;
 let heatmapMonthOffset = 0;
+let api, uploadApi, logEvent, ensureSession, heartbeat, showModal, toast;
 let _lastFilePickTs = 0;  // guard against render() destroying the file input while picker is open
 const $ = (s, ctx) => (ctx||document).querySelector(s);
 const $$ = (s, ctx) => [...(ctx||document).querySelectorAll(s)];
@@ -178,112 +177,15 @@ function flipTasks(before){
     });
   });
 }
-async function api(path, body){
-  if(!sessionToken && !await ensureSession()) throw new Error('无法建立本地会话');
-  const opt = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
-  opt.headers ||= {};
-  if(sessionToken) opt.headers['X-Session'] = sessionToken;
-  let r;
-  try{
-    r = await fetch('/api/'+path,opt);
-  }catch(e){
-    showModal('网络错误', '无法连接到服务器：'+e.message+'。请检查服务是否在运行。');
-    throw e;
-  }
-  if(r.status===401 && sessionToken){
-    sessionToken = null;
-    if(await ensureSession()){
-      opt.headers['X-Session'] = sessionToken;
-      r = await fetch('/api/'+path,opt);
-    }
-  }
-  if(r.status===409){
-    let msg = '另一个窗口正在操作，请勿并发写入。';
-    try{ const j = await r.json(); msg = j.message || msg; }catch(_){}
-    showModal('会话冲突', msg, 'warn');
-    throw new Error(msg);
-  }
-  if(!r.ok){
-    let msg = await r.text();
-    try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
-    if(/^\s*</.test(msg)) msg = '服务器返回错误 (' + r.status + ')。若是「结束休息」等新功能，请退出并重新打开应用以加载最新后端。';
-    showModal('操作失败', msg);
-    throw new Error(msg);
-  }
-  return r.json();
+function openGoalDetails(idx){
+  const i = Number.isInteger(idx) ? idx : (state?.active_goal||0);
+  const title=(state?.goals||[])[i] || state?.goal || '目标详情';
+  if($('#goalDetailsTitle')) $('#goalDetailsTitle').textContent=title;
+  switchPage('settings');
+  setModalOpen($('#goalDetailsModal'), true);
 }
-async function uploadApi(path, formData){
-  // Ensure we have a session token before POST (re-claim if lost)
-  if(!sessionToken) await ensureSession();
-  let opt = {method:'POST',headers:{},body:formData};
-  if(sessionToken) opt.headers['X-Session'] = sessionToken;
-  let r;
-  try{
-    r = await fetch('/api/'+path,opt);
-  }catch(e){
-    showModal('网络错误', '无法连接到服务器：'+e.message);
-    throw e;
-  }
-  if(r.status===401 && sessionToken){
-    sessionToken = null;
-    if(await ensureSession()){
-      opt.headers['X-Session'] = sessionToken;
-      r = await fetch('/api/'+path,opt);
-    }
-  }
-  // On 409, try to re-claim session and retry once
-  if(r.status===409){
-    sessionToken = null;
-    if(await ensureSession()){
-      opt.headers['X-Session'] = sessionToken;
-      try{
-        r = await fetch('/api/'+path,opt);
-      }catch(e){
-        showModal('网络错误', '无法连接到服务器：'+e.message);
-        throw e;
-      }
-    }
-  }
-  if(r.status===409){
-    let msg = '另一个窗口正在操作，请勿并发写入。';
-    try{ const j = await r.json(); msg = j.message || msg; }catch(_){}
-    showModal('会话冲突', msg, 'warn');
-    throw new Error(msg);
-  }
-  if(!r.ok){
-    let msg = await r.text();
-    try{ const j = JSON.parse(msg); msg = j.message || msg; }catch(_){}
-    if(/^\s*</.test(msg)) msg = '服务器返回错误 (' + r.status + ')。若是「结束休息」等新功能，请退出并重新打开应用以加载最新后端。';
-    showModal('操作失败', msg);
-    throw new Error(msg);
-  }
-  return r.json();
-}
-function logEvent(kind, message, extra={}){
-  const headers = {'Content-Type':'application/json'};
-  if(sessionToken) headers['X-Session'] = sessionToken;
-  fetch('/api/event',{method:'POST',headers,body:JSON.stringify({kind,message,extra})}).catch(()=>{});
-}
-function showModal(title, msg, kind='error'){
-  let m = $('#modal');
-  if(!m){
-    m = document.createElement('div');
-    m.id = 'modal';
-    m.className = 'modal-overlay';
-    m.innerHTML = `<div class="modal-box">
-      <h3 class="modal-title"></h3>
-      <p class="modal-msg"></p>
-      <div class="modal-actions"><button class="primary modal-ok">知道了</button></div>
-    </div>`;
-    document.body.appendChild(m);
-    m.addEventListener('click', e=>{
-      if(e.target===m || e.target.classList.contains('modal-ok')) closeModal(m);
-    });
-  }
-  $('.modal-title', m).textContent = title;
-  $('.modal-title', m).className = 'modal-title ' + kind;
-  $('.modal-msg', m).textContent = msg;
-  openModal(m);
+function isGoalNotReady(message){
+  return /请先补全目标契约|goal is not ready|complete the goal contract/i.test(String(message||''));
 }
 function setPage(page){
   const t = pageTitles[page] || [page, ''];
@@ -386,25 +288,26 @@ function showExitScreen(){
     setTimeout(() => { if(!document.hidden) window.close(); }, 2000);
   });
 }
-// Independent fixed toast container (no longer overwrites the hero #statusPill).
-function toast(msg, good=true){
-  let host = $('#toastHost');
-  if(!host){
-    host = document.createElement('div');
-    host.id = 'toastHost';
-    host.className = 'toast-host';
-    host.setAttribute('aria-live','polite');
-    host.setAttribute('role','status');
-    host.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10000;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none';
-    document.body.appendChild(host);
-  }
-  const el = document.createElement('div');
-  el.className = 'toast ' + (good ? 'toast-ok' : 'toast-err');
-  el.textContent = msg;
-  el.style.cssText = 'padding:10px 18px;border-radius:10px;background:#1f2937;color:#fff;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:80vw;transition:opacity .3s ease,transform .3s ease';
-  if(!good) el.style.background = '#b42318';
-  host.appendChild(el);
-  setTimeout(()=>{ el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; setTimeout(()=>el.remove(), 320); }, 3500);
+({showModal, toast} = TaskVergeViews.create({query: $, openModal, closeModal}));
+({api, uploadApi, logEvent, ensureSession, heartbeat} = TaskVergeApi);
+TaskVergeApi.api.onError = (message) => {
+  if(!isGoalNotReady(message)) return false;
+  showModal('还不能生成任务', message+'\n请补全最终成果、日期、当前基础、成功标准和现实约束。', 'warn');
+  openGoalDetails();
+  return true;
+};
+function renderGoalReadiness(){
+  const readiness=state.goal_readiness||state.readiness||{};
+  const contract=readiness.contract||state.goal_contract||{};
+  let host=$('#goalReadiness');
+  if(!host){ host=document.createElement('section'); host.id='goalReadiness'; host.className='goal-readiness'; $('#dashboard')?.insertBefore(host,$('#dashboard').firstChild); }
+  const questions=(readiness.questions||[]).slice(0,3);
+  const criteria=(contract.success_criteria||[]).slice(0,3);
+  const constraints=(contract.constraints||[]).slice(0,2);
+  const ready=!!readiness.ready;
+  host.hidden=ready && !contract.outcome;
+  host.innerHTML=ready ? `<div class="readiness-ready"><b>目标已确认</b><span>${escapeHtml(contract.outcome||state.goal||'')}</span>${criteria.length?`<small>成功标准：${escapeHtml(criteria.join('；'))}</small>`:''}${constraints.length?`<small>约束：${escapeHtml(constraints.join('；'))}</small>`:''}<button data-confirm-generation>确认目标并生成任务</button></div>` : `<div class="readiness-missing"><b>生成前先补全目标（${Math.round(readiness.score||0)}%）</b><p>还需要确认以下问题：</p><ol>${questions.map(escapeHtml).map(q=>`<li>${q}</li>`).join('')}</ol><button data-complete-goal>去补全目标</button></div>`;
+  ['generate','regenerateTasks'].forEach(id=>{const button=$('#'+id);if(button) button.disabled=!ready;});
 }
 function renderOnboarding(){
   let banner = $('#onboarding');
@@ -526,6 +429,10 @@ function render(){
   }
   countTo($('#pct'), Math.round(state.completion_pct||0), '%');
   const motivation=state.motivation||{};
+  const tasks=state.tasks||[];
+  if($('#heroDoneCount')) $('#heroDoneCount').textContent=String(tasks.filter(t=>t.done).length);
+  if($('#heroTaskCount')) $('#heroTaskCount').textContent=String(tasks.length);
+  if($('#heroStreak')) $('#heroStreak').textContent=String(motivation.streak||0);
   $('#pct').title=`积分 ${motivation.points||0} · 连续完成 ${motivation.streak||0} 次`;
   renderMotivationScore();
   $('#progressArc').style.strokeDashoffset = 314 - 314*Math.max(0,Math.min(100,state.completion_pct||0))/100;
@@ -577,6 +484,8 @@ function render(){
   }
   renderBreakWidget();
   renderOnboarding();
+  renderGoalReadiness();
+  renderCompanion();
   renderCurrentTaskBar();
   syncFocusStatusPill();
   renderSessionControls();
@@ -619,6 +528,150 @@ function renderMotivationScore(){
     const stuck = (state.tasks||[]).some(t=>!t.done&&['paused','partial'].includes(t.status));
     const recovering = (state.tasks||[]).some(t=>!t.done&&t.role==='recovery');
     $('#motivationRecovery').hidden = !stuck || recovering;
+  }
+}
+
+const COMPANION_LINES = {
+  idle: ['准备好了就开工。','才不是在摸鱼，是在蓄力。','目标清楚了吗？不清楚我可不管。'],
+  wait: ['下一件在等你。','别让待办自己长脚跑掉。','开始了我就盯着你。'],
+  focus: ['我守着，你继续。','别看我，看任务。','提交之前先检查交付物。'],
+  rest: ['先缓一缓。','休息不是逃，是换口气。','好了就回来，我还在。'],
+  happy: ['这下对上了。','过了！再来一件也行。','连续的感觉不错。'],
+  cheer: ['先做最小一步。','没过也别散，拆小一点。','证据不够就补证据。'],
+  poke: ['干嘛戳我。','再戳我把任务藏起来。','戳完了就去干活。','哼。'],
+  feed: {
+    '小鱼干': ['才不是大肥鱼……多谢。','这条可以。','吃完继续盯你。'],
+    '蛋糕': ['甜的也行。','别以为喂我就放过验收。','嗯，心情好一点了。'],
+    '棒棒糖': ['嘎嘣脆。','糖可以，任务不行就重来。','下次带小鱼干。']
+  },
+  talk: ['才不是大肥鱼。','先把成功标准写清楚。','没有证据的通过，我不认。','D指导说先吃饭？那你先做完这件。','思维链：用户是不是又想摸鱼。']
+};
+let companionPlay = {until:0, mood:'', speech:'', emote:'', anim:''};
+function pickLine(list){ const items=list||[]; return items[Math.floor(Math.random()*Math.max(items.length,1))]||''; }
+function playCompanion(mood, speech, emote, anim, ms){
+  companionPlay={until:Date.now()+(ms||1600), mood, speech, emote:emote||'', anim:anim||mood};
+  renderCompanion();
+  setTimeout(()=>{ if(Date.now()>=companionPlay.until-20) renderCompanion(); }, (ms||1600)+30);
+}
+function companionSnapshot(){
+  const tasks=state.tasks||[];
+  const doing=tasks.find(t=>!t.done && t.status==='doing');
+  const next=tasks.find(t=>!t.done && t.status!=='skipped');
+  const last=(state.motivation?.history||[]).slice(-1)[0]||{};
+  const points=Number(state.motivation?.points)||0;
+  const streak=Number(state.motivation?.streak)||0;
+  const energy=Math.max(12, Math.min(100, 58 + Math.round(points/2) + (doing?18:0) - (state.break_active?8:0)));
+  const bond=Math.max(18, Math.min(100, 24 + streak*14 + tasks.filter(t=>t.done).length*8));
+  let mood='idle', moodLabel='待机', speech=pickLine(COMPANION_LINES.idle), line='还没有进行中的任务时，我会在这里等你开始。';
+  let primary={action:'focus', label:'开始专注', hidden:false};
+  let secondary={action:'rest', label:'休息一下', hidden:false};
+  if(doing){
+    mood='focus'; moodLabel='专注中'; speech=pickLine(COMPANION_LINES.focus);
+    line='正在做：'+(doing.text||doing.title||'当前任务')+'。提交可检查结果后我会变高兴。';
+    primary={action:'submit', label:'提交验收', hidden:false};
+    secondary={action:'pause', label:'暂停一下', hidden:false};
+  }else if(state.break_active){
+    mood='rest'; moodLabel='休息中'; speech=pickLine(COMPANION_LINES.rest);
+    line='休息结束后再从最小可执行步骤接着做。';
+    primary={action:'end-rest', label:'结束休息', hidden:false};
+    secondary={action:'focus', label:'开始专注', hidden:true};
+  }else if(last.outcome==='accepted'){
+    mood='happy'; moodLabel='开心'; speech=pickLine(COMPANION_LINES.happy);
+    line='连续完成 '+streak+' 次。下一件也按同样标准验收。';
+    primary={action:'focus', label: next ? '开始下一件' : '生成任务', hidden:false};
+  }else if(last.outcome==='failed' || last.outcome==='skipped'){
+    mood='cheer'; moodLabel='打气'; speech=pickLine(COMPANION_LINES.cheer);
+    line='验收没过也没关系，从一个可验证的小动作重新开始。';
+    primary={action:'recover', label:'开始补救', hidden:false};
+  }else if(next){
+    mood='idle'; moodLabel='待命'; speech=pickLine(COMPANION_LINES.wait);
+    line='待开始：'+(next.text||next.title||'今日任务')+'。';
+  }else if(!(state.goal && String(state.goal).trim())){
+    mood='idle'; moodLabel='待机'; speech='先把目标写清楚。';
+    line='去设置页补全最终成果和成功标准，我才能跟着验收。';
+    primary={action:'goal', label:'去补全目标', hidden:false};
+    secondary={action:'rest', label:'休息一下', hidden:true};
+  }
+  const playing=companionPlay.until>Date.now();
+  if(playing){
+    mood=companionPlay.mood||mood;
+    speech=companionPlay.speech||speech;
+    if(mood==='poke') moodLabel='被戳';
+    if(mood==='feed') moodLabel='进食';
+    if(mood==='talk') moodLabel='碎碎念';
+  }
+  return {mood, moodLabel, speech, line, energy, bond, primary, secondary, playing, emote: playing ? companionPlay.emote : '', anim: playing ? companionPlay.anim : ''};
+}
+
+function renderCompanion(){
+  const host=$('#companion');
+  if(!host || !state) return;
+  const snap=companionSnapshot();
+  host.dataset.mood=snap.mood;
+  host.dataset.anim=snap.anim||'';
+  const pose=$('#companionPet');
+  if(pose){
+    const src={focus:'/pets/dafeiyu/side.png', rest:'/pets/dafeiyu/back.png', poke:'/pets/dafeiyu/side.png', feed:'/pets/dafeiyu/front.png', talk:'/pets/dafeiyu/front.png', happy:'/pets/dafeiyu/front.png', cheer:'/pets/dafeiyu/front.png', idle:'/pets/dafeiyu/front.png'}[snap.mood]||'/pets/dafeiyu/front.png';
+    if(!String(pose.getAttribute('src')||'').endsWith(src.split('/').pop())) pose.src=src;
+  }
+  const set=(id,text)=>{ const el=$(id); if(el) el.textContent=text; };
+  set('#companionMood', snap.moodLabel);
+  set('#companionSpeech', snap.speech);
+  if(!snap.playing) set('#companionLine', snap.line);
+  const emote=$('#companionEmote');
+  if(emote){ emote.textContent=snap.emote||''; emote.hidden=!snap.emote; }
+  const energy=$('#companionEnergy'); if(energy) energy.style.width=snap.energy+'%';
+  const bond=$('#companionBond'); if(bond) bond.style.width=snap.bond+'%';
+  const primary=$('#companionPrimary');
+  if(primary){ primary.dataset.companion=snap.primary.action; primary.textContent=snap.primary.label; primary.hidden=!!snap.primary.hidden; }
+  const secondary=$('#companionSecondary');
+  if(secondary){ secondary.dataset.companion=snap.secondary.action; secondary.textContent=snap.secondary.label; secondary.hidden=!!snap.secondary.hidden; }
+}
+
+async function runCompanion(action, treat){
+  const tasks=state.tasks||[];
+  const doing=tasks.find(t=>!t.done && t.status==='doing');
+  const next=tasks.find(t=>!t.done && t.status!=='skipped');
+  if(action==='goal'){ switchPage('settings'); return; }
+  if(action==='rest' || action==='end-rest'){ $('#quickStartBreak')?.click(); return; }
+  if(action==='focus'){
+    if(doing) return;
+    if(!next) return run('generate');
+    const idx=tasks.indexOf(next), previous=next.status;
+    next.status='doing'; next.started_at=new Date().toISOString(); render();
+    try{ await api('task-state',{idx,status:'doing'}); await load(); }
+    catch(err){ next.status=previous; render(); toast('开始任务失败：'+err.message,false); }
+    return;
+  }
+  if(action==='pause' && doing){
+    const idx=tasks.indexOf(doing);
+    try{ await api('task-state',{idx,status:'paused'}); toast('本次专注已暂停'); await load(); }
+    catch(err){ toast('暂停任务失败：'+err.message,false); }
+    return;
+  }
+  if(action==='submit' && doing){
+    const idx=tasks.indexOf(doing);
+    const button=document.querySelector('[data-ai-evaluate="'+idx+'"]');
+    if(button) button.click();
+    return;
+  }
+  if(action==='recover'){
+    try{ const r=await api('recovery',{}); await api('task-state',{idx:r.idx,status:'doing'}); toast('补救行动已开始'); await load(); }
+    catch(err){ toast('当前没有需要补救的任务',false); }
+    return;
+  }
+  if(action==='poke'){
+    playCompanion('poke', pickLine(COMPANION_LINES.poke), '💢', 'poke', 1200);
+    return;
+  }
+  if(action==='talk'){
+    playCompanion('talk', pickLine(COMPANION_LINES.talk), '💬', 'talk', 2200);
+    return;
+  }
+  if(action==='feed'){
+    const snack=treat||'小鱼干';
+    const lines=COMPANION_LINES.feed[snack]||COMPANION_LINES.feed['小鱼干'];
+    playCompanion('feed', pickLine(lines), snack==='蛋糕'?'🍰':snack==='棒棒糖'?'🍭':'🐟', 'feed', 1800);
   }
 }
 
@@ -906,7 +959,9 @@ function taskCard(t,i){
   const agentRun=(state.agent_runs||[]).slice().reverse().find(r=>r.task_id===(t.id||t.title));
   const agentUi=agentRun ? `<div class="agent-run"><b>Agent：${escapeHtml(agentRun.status)}</b><span>步骤 ${agentRun.step}/${agentRun.max_steps}</span>${agentRun.status==='awaiting_confirmation'?`<button data-agent="confirm" data-run-id="${escapeHtml(agentRun.run_id)}">确认继续</button>`:''}${['paused','failed','blocked'].includes(agentRun.status)?`<button data-agent="resume" data-run-id="${escapeHtml(agentRun.run_id)}">继续</button>`:''}${!['completed','failed','blocked','paused','awaiting_confirmation'].includes(agentRun.status)?`<button data-agent="stop" data-run-id="${escapeHtml(agentRun.run_id)}">暂停</button>`:''}</div>` : '';
   const ar = t.acceptance_result || {};
-  const decisionLabel={accepted:'通过',conditional:'有条件通过',review:'待人工复核',rejected:'驳回'}[ar.decision]||'';
+  const decisionLabel={passed:'通过',failed:'未通过',needs_review:'待人工复核',blocked:'受阻',accepted:'通过',conditional:'有条件通过',review:'待人工复核',rejected:'驳回'}[ar.status||ar.decision]||'验收结果';
+  const acceptanceChecks=Array.isArray(ar.checks)?ar.checks:[];
+  const nextActions=ar.next_actions||ar.next_steps||[];
   const ancestry=[state.goal,t.milestone||'今日执行',t.text||t.title].filter(Boolean);
   // evidence is now a list; join names for display
   const evList = Array.isArray(t.evidence) ? t.evidence.filter(Boolean) : (t.evidence ? [t.evidence] : []);
@@ -944,7 +999,9 @@ function taskCard(t,i){
       ${evList.length ? `<div class="evidence-files">${evList.map((e,j)=>`<span class="evidence-tag" title="${escapeHtml(e)}">${escapeHtml(String(e).split(/[\\/]/).pop())}<button data-remove-evidence="${i}" data-ev-idx="${j}" aria-label="删除交付物">×</button></span>`).join('')}</div>` : ''}
       ${ar.reason ? `<div class="task-field acceptance-decision ${escapeHtml(ar.decision||'')}"><b>${escapeHtml(decisionLabel||'验收结果')}</b><span>${escapeHtml(ar.reason)} · 置信度 ${Math.round((ar.confidence||0)*100)}%</span></div>` : ''}
       ${(ar.missing||[]).length ? `<div class="task-field"><b>缺少</b><span>${escapeHtml(ar.missing.join('；'))}</span></div>` : ''}
-      ${(ar.next_steps||[]).length ? `<div class="task-field"><b>补交</b><span>${escapeHtml(ar.next_steps.join('；'))}</span></div>` : ''}
+      ${acceptanceChecks.length ? `<div class="task-field acceptance-checks"><b>检查项</b><ul>${acceptanceChecks.map(check=>`<li><strong>${escapeHtml(check.status||'待核验')}</strong> ${escapeHtml(check.criterion||check.id||'检查项')}<small>${escapeHtml(check.reason||check.evidence||'')}</small></li>`).join('')}</ul></div>` : ''}
+      ${nextActions.length ? `<div class="task-field"><b>下一步</b><span>${escapeHtml(nextActions.join('；'))}</span></div>` : ''}
+      ${(ar.status && ar.status!=='passed') || ar.pass===false ? `<button class="recovery-task" data-create-recovery="${i}">创建补救任务</button>` : ''}
       ${(ar.evidence_refs||[]).length ? `<div class="task-field"><b>依据</b><span>${escapeHtml(ar.evidence_refs.join('；'))}</span></div>` : ''}
        ${requiredApps.length ? `<div class="task-apps"><small>必需应用</small>${requiredApps.map(appChipTiny).join('')}</div>` : ''}
        ${optionalApps.length ? `<div class="task-apps"><small>可选应用</small>${optionalApps.map(appChipTiny).join('')}</div>` : ''}
@@ -1116,6 +1173,8 @@ function renderTasksLight(){
   renderMotivationScore();
   renderBreakWidget();
   renderOnboarding();
+  renderGoalReadiness();
+  renderCompanion();
   renderCurrentTaskBar();
   syncFocusStatusPill();
   renderSessionControls();
@@ -1175,7 +1234,21 @@ async function run(name){
     toast('请求失败：'+e.message, false);
   }
 }
+async function loadStorageStatus(){
+  const el=$('#storageStatus');
+  if(!el) return null;
+  try{
+    const info=await api('storage-status');
+    const latest=info.backups?.[0];
+    const issues=(info.issues||[]).join('；');
+    el.textContent=`schema ${info.schema_version||'?'} · ${info.ok===false?'数据异常':'数据库正常'} · ${info.counts?.goals||0} 个目标 · ${info.counts?.tasks||0} 个任务 · ${info.backups?.length||0} 份备份${latest?' · 最近 '+new Date(latest.created_at).toLocaleString():''}${issues?' · '+issues:''}`;
+    el.dataset.backups=JSON.stringify(info.backups||[]);
+    return info;
+  }catch(error){ el.textContent='数据检查失败：'+error.message; return null; }
+}
 document.addEventListener('click', async e=>{
+  if(e.target.closest?.('[data-complete-goal]')){ openGoalDetails(); return; }
+  if(e.target.closest?.('[data-confirm-generation]')){ if(confirmDlg('已确认目标契约。现在生成今日任务吗？')) await runGeneration(); return; }
   const editGoal=e.target.closest?.('[data-edit-goal]');
   if(editGoal){
     const idx=+editGoal.dataset.editGoal;
@@ -1199,6 +1272,16 @@ document.addEventListener('click', async e=>{
   }
   if(e.target.id==='saveGoalDetails'){
     $('#saveSettings').click(); setModalOpen($('#goalDetailsModal'),false); return;
+  }
+  if(e.target.id==='deleteGoal'){
+    const idx=state.active_goal||0, title=(state.goals||[])[idx]||'当前目标';
+    if((state.goals||[]).length<=1){ showModal('无法删除','至少保留一个目标。','warn'); return; }
+    if(!confirmDlg(`确定删除“${title}”吗？该目标会被归档，相关任务和历史记录不会删除。`)) return;
+    await api('goal-delete',{index:idx});
+    setModalOpen($('#goalDetailsModal'),false);
+    toast('目标已删除并归档');
+    await load();
+    return;
   }
   const openMaterials=e.target.closest?.('[data-open-materials]');
   if(openMaterials){ setModalOpen($('#taskMaterialsModal'),true); return; }
@@ -1235,6 +1318,7 @@ document.addEventListener('click', async e=>{
     const modal=$('#advancedSettingsModal');
     document.body.appendChild(modal);
     setModalOpen(modal,true);
+    loadStorageStatus();
     return;
   }
   if(e.target.closest?.('#closeAdvancedSettings') || e.target.closest?.('#cancelAdvancedSettings') || (e.target.id==='advancedSettingsModal')){
@@ -1253,6 +1337,12 @@ document.addEventListener('click', async e=>{
   if(e.target.closest?.('[data-start-recovery]')){
     try{ const r=await api('recovery',{}); await api('task-state',{idx:r.idx,status:'doing'}); toast('补救行动已开始'); await load(); }
     catch(err){ toast('当前没有需要补救的任务',false); }
+    return;
+  }
+  const recover=e.target.closest?.('[data-create-recovery]');
+  if(recover){
+    try{ await api('remediate-task',{idx:+recover.dataset.createRecovery}); toast('已创建补救任务'); await load(); }
+    catch(err){ toast(err.message||'无法创建补救任务', false); }
     return;
   }
   const feedback=e.target.closest?.('[data-feedback]');
@@ -1376,7 +1466,9 @@ document.addEventListener('click', async e=>{
     return;
   }
   if(e.target.id==='refresh') return load();
-  if(e.target.id==='generate') return run('generate');
+  const companionAct=e.target.closest?.('[data-companion]');
+  if(companionAct){ await runCompanion(companionAct.dataset.companion, companionAct.dataset.treat); return; }
+  if(e.target.id==='generate' || e.target.closest?.('[data-start-today]')) return run('generate');
   if(e.target.id==='evaluate') return run('evaluate');
   if(e.target.dataset.aiEvaluate!==undefined){
     const idx=+e.target.dataset.aiEvaluate, t=state.tasks[idx] || {};
@@ -1508,6 +1600,21 @@ document.addEventListener('click', async e=>{
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`task-verge-${new Date().toISOString().slice(0,10)}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     toast('本地数据已导出'); return;
   }
+  if(e.target.id==='createBackup'){
+    const r=await api('storage-backup',{}); toast(r.message||'备份已创建'); await loadStorageStatus(); return;
+  }
+  if(e.target.id==='exportComplete'){
+    const r=await api('storage-export',{}); showModal('完整备份已导出',r.path,'success'); await loadStorageStatus(); return;
+  }
+  if(e.target.id==='importComplete'){
+    $('#importCompleteFile').click(); return;
+  }
+  if(e.target.id==='restoreLatest'){
+    const info=await loadStorageStatus(), latest=info?.backups?.[0];
+    if(!latest){ showModal('没有可恢复的备份','请先创建备份。','warn'); return; }
+    if(!confirmDlg(`确定恢复 ${new Date(latest.created_at).toLocaleString()} 的备份吗？当前数据库会先自动备份，恢复后需要重启应用。`)) return;
+    const r=await api('storage-restore',{path:latest.path,confirm:true}); showModal('恢复完成',r.message,'success'); return;
+  }
   if(e.target.id==='clearFgData'){
     if(!confirmDlg('确定清除所有前台时间数据吗？此操作不可恢复。')) return;
     try{
@@ -1524,6 +1631,13 @@ document.addEventListener('click', async e=>{
   }
 });
 document.addEventListener('change', async e=>{
+  if(e.target.id==='importCompleteFile'){
+    const file=e.target.files?.[0]; e.target.value='';
+    if(!file) return;
+    if(!confirmDlg(`确定从“${file.name}”恢复完整数据吗？当前数据库会先自动备份，目标、任务和交付物将切换到备份内容。`)) return;
+    const form=new FormData(); form.append('confirm','true'); form.append('file',file,file.name);
+    const r=await uploadApi('storage-import',form); showModal('恢复完成',r.message,'success'); return;
+  }
   if(e.target.dataset.taskResponse!==undefined){
     const idx=+e.target.dataset.taskResponse, response=e.target.value.trim();
     state.tasks[idx].response=response; await api('task-response',{idx,response}); return;
@@ -1556,35 +1670,6 @@ ensureSession().then(ok=>{
     if(!ok) throw new Error('无法建立本地会话，请重试或接管窗口');
     return load();
 }).then(showPrivacyNotice).then(loadProcesses).catch(e=>{ toast(e.message,false); if(confirmDlg('本地会话被其他窗口占用。关闭旧窗口后，是否立即重试？')) location.reload(); });
-async function claimBackendSession(){
-  try{
-    const desktopToken=new URLSearchParams(location.search).get('desktop_token');
-    const headers=desktopToken?{'X-TaskVerge-Desktop':desktopToken}:{};
-    const r = await fetch('/api/claim',{headers});
-    const j = await r.json();
-    if(j.ok){ sessionToken = j.token; return true; }
-  }catch(_){}
-  return false;
-}
-// Retry claiming session if lost (e.g. another tab closed, lock expired)
-async function ensureSession(){
-  if(sessionToken) return true;
-  if(!sessionClaimPromise) sessionClaimPromise=(async()=>{
-    for(let i=0;i<9;i++){ // backend session expires after 8 seconds
-      if(await claimBackendSession()) return true;
-      await new Promise(r=>setTimeout(r, 1000));
-    }
-    return false;
-  })();
-  try{ return await sessionClaimPromise; }
-  finally{ sessionClaimPromise=null; }
-}
-async function heartbeat(){
-  if(!sessionToken) return;
-  try{
-    await fetch('/api/heartbeat',{method:'POST',headers:{'Content-Type':'application/json','X-Session':sessionToken},body:'{}'});
-  }catch(_){}
-}
 document.addEventListener('keydown', e=>{
   // Modal accessibility: Esc closes the topmost open modal; Tab is trapped inside it.
   if(e.key==='Escape' && _openModals.size){

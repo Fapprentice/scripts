@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/app.css?v=5">
+  <link rel="stylesheet" href="/app.css?v=11">
 </head>
 <body>
   <!-- Ambient background -->
@@ -71,6 +71,11 @@
               <span id="statusPill">就绪</span>
               <h2 id="goal">尚未设置目标</h2>
               <p id="focus">前台：--</p>
+              <div class="hero-stats" id="heroStats">
+                <div><small>完成</small><strong id="heroDoneCount">0</strong></div>
+                <div><small>任务</small><strong id="heroTaskCount">0</strong></div>
+                <div><small>连续</small><strong id="heroStreak">0</strong></div>
+              </div>
               <div id="breakWidget" class="break-widget">
                 <input id="quickBreakReason" placeholder="休息原因（可选）">
                 <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
@@ -79,7 +84,41 @@
               </div>
             </div>
           </div>
+          <section id="companion" class="companion" data-mood="idle">
+            <div class="companion-stage" data-companion="poke" title="戳一戳">
+              <div class="companion-aura"></div>
+              <img class="companion-pet" id="companionPet" src="/pets/dafeiyu/front.png" alt="大肥鱼" width="178" height="238">
+              <span class="companion-emote" id="companionEmote" hidden></span>
+              <p class="companion-speech" id="companionSpeech">准备好了就开工。</p>
+            </div>
+            <div class="companion-copy">
+              <small>专注伙伴</small>
+              <b id="companionName">大肥鱼</b>
+              <span id="companionMood">待机</span>
+              <p id="companionLine">还没有进行中的任务时，我会在这里等你开始。</p>
+              <div class="companion-meters">
+                <label>精力<i><em id="companionEnergy"></em></i></label>
+                <label>默契<i><em id="companionBond"></em></i></label>
+              </div>
+              <div class="companion-treats">
+                <button type="button" data-companion="feed" data-treat="小鱼干">小鱼干</button>
+                <button type="button" data-companion="feed" data-treat="蛋糕">蛋糕</button>
+                <button type="button" data-companion="feed" data-treat="棒棒糖">棒棒糖</button>
+                <button type="button" data-companion="talk">说句话</button>
+              </div>
+              <div class="companion-actions">
+                <button type="button" class="primary" id="companionPrimary" data-companion="focus">开始专注</button>
+                <button type="button" id="companionSecondary" data-companion="rest">休息一下</button>
+              </div>
+            </div>
+          </section>
         </div>
+        <aside id="missionEmpty" class="mission-empty">
+          <small>当前任务</small>
+          <b>还没有进行中的任务</b>
+          <p>把目标拆成下一步可执行、可验收的动作。生成今日任务后，这里会显示正在做的那一项。</p>
+          <button type="button" class="primary" data-start-today>生成今日任务</button>
+        </aside>
         <div class="dash-bottom">
           <div class="panel dash-tasks">
             <div class="panel-head"><h3>今日任务</h3><div class="panel-actions"><button id="regenerateTasks" class="primary">重新生成任务</button><button id="dashboardToggleLock">锁定计划</button><button id="addTask">新增</button></div></div>
@@ -124,7 +163,7 @@
                 </div>
                 <p id="goalReadiness" class="hint"></p>
               </div>
-              <footer><button data-close-goal-details>取消</button><button id="saveGoalDetails" class="primary">保存目标</button></footer>
+              <footer><button id="deleteGoal" class="danger">删除目标</button><span></span><button data-close-goal-details>取消</button><button id="saveGoalDetails" class="primary">保存目标</button></footer>
             </section>
           </div>
           <button id="openAdvancedSettings" class="settings-entry">详细设置 <span>生成、专注、隐私与数据管理　›</span></button>
@@ -181,9 +220,20 @@
           </details>
           <details class="privacy-box">
             <summary>隐私说明</summary>
-            <p class="hint">前台统计默认仅保存在本地 fgtime.json；只有开启"允许云 AI 使用前台应用时间统计"后才会随 AI 验收发送。可随时关闭或清除。</p>
-            <button id="exportData">导出本地数据</button>
+            <p class="hint">前台统计默认仅保存在本机数据库；只有开启“允许云 AI 使用前台应用时间统计”后才会随 AI 验收发送。可随时关闭或清除。</p>
             <button id="clearFgData" class="danger">清除前台时间数据</button>
+          </details>
+          <details class="privacy-box" id="storageManagement">
+            <summary>数据管理与恢复</summary>
+            <p id="storageStatus" class="hint">正在检查本地数据…</p>
+            <div class="row-actions">
+              <button id="createBackup">立即备份</button>
+              <button id="exportComplete">导出完整备份</button>
+              <button id="importComplete">导入完整备份</button>
+              <button id="restoreLatest" class="danger">恢复最近备份</button>
+              <input id="importCompleteFile" type="file" accept=".tvbackup" hidden>
+            </div>
+            <p class="hint">完整备份包含目标、任务、学习记录和交付物；恢复会要求二次确认。</p>
           </details>
               </div>
               <footer><button id="cancelAdvancedSettings">取消</button><button id="saveAdvancedSettings" class="primary">保存详细设置</button></footer>
@@ -208,6 +258,8 @@
       </section>
     </main>
   </div>
-  <script src="/app.js?v=5"></script>
+  <script src="/views.js?v=2"></script>
+  <script src="/api.js?v=2"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>
