@@ -1977,7 +1977,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if data.get("confirm") is not True: return self.send_json({"ok":False,"message":"恢复前必须明确确认"},400)
                 allowed={item["path"] for item in STORE.list_backups()}; path=task_text(data.get("path"))
                 if path not in allowed: return self.send_json({"ok":False,"message":"备份不存在或不受信任"},400)
-                STORE.restore_backup(path); return self.send_json({"ok":True,"message":"备份已恢复，请重启应用"})
+                pre=STORE.restore_backup(path); return self.send_json({"ok":True,"path":pre,"message":"备份已恢复，请重启应用"})
             if self.path=="/api/event":
                 evlog(c,task_text(data.get("kind","ui_event"))[:40] or "ui_event",task_text(data.get("message",""))[:200],data.get("extra") if isinstance(data.get("extra"),dict) else {})
                 sc(c); return self.send_json({"ok":True})
