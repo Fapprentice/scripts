@@ -1,0 +1,5 @@
+# Development and deterministic test tooling.
+-r requirements.txt
+pytest==8.3.5
+pytest-timeout==2.3.1
+ruff==0.11.2

@@ -26,6 +26,9 @@ function Sign-Artifact([string]$Path) {
 
 Write-Host "=== Task Verge Build ===" -ForegroundColor Cyan
 
+$buildRequirements = Join-Path $Root "requirements-build.txt"
+if (-not (Test-Path $buildRequirements)) { throw "Missing build dependency manifest: $buildRequirements" }
+
 if (-not $SkipTests -and -not $InstallerOnly) {
     & (Join-Path $Root "packaging\verify.ps1")
     if ($LASTEXITCODE -ne 0) { throw "verification failed" }

@@ -1,0 +1,4 @@
+# Windows desktop packaging tooling.
+-r requirements.txt
+pywebview==5.4
+pyinstaller==6.12.0
