@@ -22,7 +22,7 @@ import applog as _APPLOG
 import apprules as _APPRULES
 import secretstore as _SECRETSTORE
 from runtime import JobRunner, BoundedHTTPServer
-from state_store import JsonStore
+from state_store import JsonStore, open_store
 from task_service import TaskService
 from agent_service import AgentService
 from feedback_service import FeedbackService
@@ -92,7 +92,8 @@ P = {
     "url": os.path.join(APP_DIR, "task-panel.url"),
     "pid": os.path.join(APP_DIR, "task-panel.pid"),
     "icons": os.path.join(APP_DIR, "icon-cache"),
-    "uploads": os.path.join(APP_DIR, "uploads"),
+    "uploads": os.path.join(APP_DIR, "attachments"),
+    "exports": os.path.join(APP_DIR, "exports"),
     "ico": os.path.join(os.environ.get("TEMP", APP_DIR), "tpanel.ico"),
     "as": os.path.join(os.environ.get("APPDATA",""), "Microsoft","Windows",
         "Start Menu","Programs","Startup","task-panel.bat"),
@@ -105,7 +106,8 @@ P = {
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _MAX_JSON_BYTES = 1 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-CFG0 = {"goal":"","goals":[],"active_goal":0,"state_revision":0,"blocklist":[],"blocklists_by_goal":{},"task_apps":[],"manual_task_apps":[],"ai_task_apps":[],"task_app_categories":[],"tasks":[],"done_flags":[],"completion_pct":0,
+_MAX_BACKUP_BYTES = 512 * 1024 * 1024
+CFG0 = {"goal":"","goals":[],"archived_goals":[],"active_goal":0,"state_revision":0,"blocklist":[],"blocklists_by_goal":{},"task_apps":[],"manual_task_apps":[],"ai_task_apps":[],"task_app_categories":[],"tasks":[],"done_flags":[],"completion_pct":0,
     "tasks_by_goal":{},"flags_by_goal":{},"pct_by_goal":{},"apps_by_goal":{},"manual_apps_by_goal":{},"ai_apps_by_goal":{},"app_cats_by_goal":{},
     "locks_by_goal":{},"time_blocks_by_goal":{},"generation_by_goal":{},"acceptance_by_goal":{},
     "feedback_by_goal":{},"user_models_by_goal":{},"adaptive_signals_by_goal":{},
@@ -119,9 +121,23 @@ CFG0 = {"goal":"","goals":[],"active_goal":0,"state_revision":0,"blocklist":[],"
     "focus_guard":{"enabled":True,"pause_until":0,"app_overrides":{},"stats":{"distractions":0,"distraction_seconds":0,"closed_windows":0,"temporary_allows":0,"permanent_allows":0,"paused":0}},
     "task_gen":{"available_minutes":120,"task_count":3,"max_task_minutes":45,"prefer_continuation":True,"force_measurable_output":True}}
 
-STORE = JsonStore(P["log"])
-jl = STORE.load
-js = STORE.save
+LEGACY_STORE = JsonStore(P["log"])
+def _confirm_storage_recovery(backup):
+    if "--ci" in sys.argv: return False
+    message="检测到本地数据库损坏。\n\n可恢复最近的有效备份：\n{}\n\n损坏文件会保留，不会删除。是否恢复？".format(backup)
+    return ctypes.windll.user32.MessageBoxW(None,message,"Task Verge 数据恢复",0x34)==6
+STORE = open_store(APP_DIR, P["log"], _confirm_storage_recovery)
+_DURABLE_DOCUMENTS = {"task-config.json", "history.json", "fgtime.json"}
+def jl(path, default=None):
+    return (STORE if os.path.basename(path).lower() in _DURABLE_DOCUMENTS else LEGACY_STORE).load(path, default)
+def js(path, data):
+    return (STORE if os.path.basename(path).lower() in _DURABLE_DOCUMENTS else LEGACY_STORE).save(path, data)
+
+# Import all legacy documents before rewriting evidence paths. The source JSON
+# and uploads remain untouched as a read-only migration safety net.
+for _legacy_path, _default in ((P["cfg"], CFG0), (P["hist"], []), (P["fg"], {})):
+    jl(_legacy_path, copy.deepcopy(_default))
+STORE.migrate_legacy_attachments(os.path.join(APP_DIR, "uploads"))
 
 def path_under(root, path):
     try:
@@ -162,8 +178,8 @@ def cleanup_uploads(c):
         for name in files:
             fp=os.path.abspath(os.path.join(dirpath,name))
             if fp.lower() not in keep:
-                try: os.remove(fp)
-                except OSError: pass
+                try: STORE.trash_attachment(fp)
+                except (OSError, ValueError): pass
         try:
             if dirpath!=root and not os.listdir(dirpath): os.rmdir(dirpath)
         except OSError: pass
@@ -215,6 +231,25 @@ def goal_details(c):
     return {"outcome":task_text(g.get("outcome")),"deadline":task_text(g.get("deadline")),
             "baseline":task_text(g.get("baseline")),"success_criteria":as_list(g.get("success_criteria")),
             "constraints":as_list(g.get("constraints"))}
+
+def record_product_event(c, name):
+    """Record privacy-safe funnel counts without storing raw user content."""
+    allowed = {"goal_created","goal_ready","goal_confirmed","first_task_generated","first_task_started","first_evidence_submitted","first_task_accepted"}
+    if name not in allowed: return
+    funnel = c.setdefault("product_funnel", {})
+    funnel[name] = int(funnel.get(name, 0) or 0) + 1
+    funnel["updated_at"] = datetime.now().isoformat()
+
+
+def mark_first_task_started(c, task, idx):
+    """Persist the first execution milestone without altering the goal contract."""
+    if c.get("first_task_started_at"):
+        return
+    c["first_task_started_at"] = datetime.now().isoformat()
+    c["first_task_id"] = task_text(task.get("id"))
+    evlog(c, "first_task_started", "开始首个任务", {"idx": idx, "task_id": c["first_task_id"]})
+    record_product_event(c, "first_task_started")
+
 
 def ensure_goal_state(c):
     c = c if isinstance(c, dict) else copy.deepcopy(CFG0)
@@ -649,20 +684,7 @@ def compact_evidence_basis(details):
             for d in (details or [])]
 
 def norm_acceptance_result(result, passed=False, reason=""):
-    result = result if isinstance(result, dict) else {}
-    try: confidence=max(0.0,min(1.0,float(result.get("confidence",0.5) or 0)))
-    except (TypeError,ValueError): confidence=0.5
-    decision=task_text(result.get("decision"))
-    if decision not in ("accepted","conditional","review","rejected"):
-        decision="accepted" if result.get("pass",passed) and confidence>=0.75 and not result.get("needs_llm") else (
-            "conditional" if result.get("pass",passed) and not result.get("needs_llm") else
-            "review" if result.get("needs_llm") else "rejected")
-    return {"pass": bool(result.get("pass", passed)), "reason": task_text(result.get("reason")) or reason,
-            "missing": result.get("missing", []) if isinstance(result.get("missing", []), list) else [],
-            "next_steps": result.get("next_steps", []) if isinstance(result.get("next_steps", []), list) else [],
-            "evidence_refs": result.get("evidence_refs", []) if isinstance(result.get("evidence_refs", []), list) else [],
-            "needs_llm": bool(result.get("needs_llm", False)),
-            "confidence":round(confidence,2),"decision":decision}
+    return _ACCEPTANCE_MOD.explainable_result(result, passed=passed, reason=reason)
 
 def generation_guard(c):
     # ponytail: ignore unrelated telemetry writes; only user-editable inputs can invalidate a generation.
@@ -826,18 +848,16 @@ def evaluate_task(task_idx):
         result=_ACCEPTANCE_MOD.verdict_to_acceptance_result(verdict)
         if result.get("needs_llm") and cloud_enabled and valid_deepseek_key(dk()):
             result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
-    passed=result.get("decision")=="accepted"
-    result=norm_acceptance_result(result,passed); task["acceptance_result"]=result; task["status"]="done" if passed else "pending"
-    if result["decision"] != "accepted":
+    result=norm_acceptance_result(result)
+    if result["status"] != "passed":
         sample_ai_incident("evidence_to_acceptance", "deepseek" if cloud_enabled else "deterministic",
                            task.get("criterion_ids", []))
-    if result["decision"] in ("accepted","rejected"):
-        adaptive.record_learning_outcome(c, task, passed)
-        adaptive.record_outcome(c, "accepted" if passed else "failed")
     reset_task_timer(task)
-    flags=list(c.get("done_flags",[])); flags.extend([False]*max(0,len(items)-len(flags))); flags[task_idx]=passed
-    c["tasks"]=items; c["done_flags"]=flags; sync_pct(c); save_goal_state(c); evlog(c,"task_acceptance","通过" if passed else "未通过",{"idx":task_idx}); sc(c)
-    return {"ok":True,"pass":passed,"result":result}
+    c["tasks"]=items; c["done_flags"]=list(c.get("done_flags",[]))
+    ok, persisted = ACCEPTANCE.persist_result(c, task_idx, result)
+    if not ok: raise ValueError(persisted)
+    if persisted.get("status")=="passed": record_product_event(c, "first_task_accepted")
+    return {"ok":True,"pass":persisted.get("status")=="passed","status":persisted.get("status"),"result":persisted}
 
 def cli_eval():
     c = ensure_goal_state(lc())
@@ -1195,7 +1215,10 @@ class WebApp:
             "coach_context":c.get("coach_context",{}),"coach_messages":c.get("coach_messages",[])[-20:],
             "task_generation":c.get("task_generation",{}),
             "goal_details":goal_details(c),
+            "goal_contract":adaptive.goal_contract(goal_details(c)),
             "goal_readiness":adaptive.goal_readiness(goal_details(c)),
+            "first_task":{"started_at":c.get("first_task_started_at",""),"task_id":c.get("first_task_id","")},
+            "product_funnel":c.get("product_funnel",{}),
             "last_acceptance":c.get("last_acceptance",{}),
             "feedback_history":c.get("feedback_history",[])[-30:],
             "user_model":public_model, "knowledge_graph":adaptive.knowledge_graph(c),
@@ -1294,8 +1317,7 @@ def _agent_tools(c):
         with _CFG_LOCK:
             latest,task=current()
             if not task: raise ValueError("no active task")
-            up=os.path.join(P["uploads"],gid(latest),task.get("id") or "agent"); os.makedirs(up,exist_ok=True)
-            target=os.path.join(up,os.path.basename(path)); shutil.copy2(path,target)
+            target=STORE.add_attachment(path, os.path.basename(path))
             ev=as_list(task.get("evidence",[]))
             if target not in ev: ev.append(target)
             task["evidence"]=ev; save_goal_state(latest); sc(latest)
@@ -1411,10 +1433,15 @@ def _start_gen_job():
 
 def start_gen_job():
     with GEN_START_LOCK:
+        readiness = adaptive.goal_readiness(goal_details(ensure_goal_state(lc())))
+        if not readiness["ready"]:
+            missing="、".join(readiness.get("missing") or [])
+            return {"ok":False, "code":"goal_not_ready", "message":"请先补全目标契约" + ("：还缺"+missing if missing else "。"), "readiness":readiness}
+        c=ensure_goal_state(lc()); record_product_event(c, "goal_ready"); record_product_event(c, "first_task_generated"); save_goal_state(c)
         if GEN_STATUS.get("running"):
-            return {"message":"generation already running","job_id":GEN_STATUS.get("job_id","")}
+            return {"ok":True, "message":"generation already running","job_id":GEN_STATUS.get("job_id","")}
         _start_gen_job()
-        return {"message":"generation started","job_id":GEN_STATUS.get("job_id","")}
+        return {"ok":True, "message":"generation started","job_id":GEN_STATUS.get("job_id","")}
 
 def processes():
     try: raw=_run(["tasklist","/fo","csv","/nh"],timeout=10).stdout
@@ -1848,6 +1875,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path=="/api/state": return self.send_json(WEBAPP.state())
         if self.path=="/api/export":
             data=ensure_goal_state(lc()); data["history"]=lh(); data["fg"]=lf(); return self.send_json(data)
+        if self.path=="/api/storage-status":
+            status=STORE.status(); status.update(STORE.health_report()); status["backups"]=STORE.list_backups(); return self.send_json(status)
         if self.path=="/api/insights":
             c=ensure_goal_state(lc()); return self.send_json(insights_for(c))
         if self.path=="/api/generate-status": return self.send_json(GEN_STATUS)
@@ -1902,21 +1931,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 item=fields.get("file"); filename=item.get_filename() if item else ""
                 if not filename: return self.send_json({"ok":False,"message":"没有文件"},400)
                 name=re.sub(r"[^A-Za-z0-9._-]+","_",os.path.basename(filename))[:120] or "upload.bin"
-                up=os.path.join(P["uploads"],gid(c),ts[i].get("id") or str(i)); os.makedirs(up,exist_ok=True)
-                fp=os.path.abspath(os.path.join(up,name))
-                with open(fp,"wb") as f: f.write(item.get_payload(decode=True) or b"")
+                fd,tmp=tempfile.mkstemp(dir=APP_DIR)
+                try:
+                    with os.fdopen(fd,"wb") as f: f.write(item.get_payload(decode=True) or b"")
+                    fp=STORE.add_attachment(tmp,name)
+                finally:
+                    try: os.remove(tmp)
+                    except OSError: pass
                 # evidence is a list — append new file, deduplicate by abspath
                 ev = as_list(ts[i].get("evidence"))
                 if fp.lower() not in [os.path.abspath(x).lower() for x in ev]:
                     ev.append(fp)
                 ts[i]["evidence"]=ev; c["tasks"]=ts; save_goal_state(c); evlog(c,"task_evidence","上传交付物",{"idx":i,"file":fp}); sc(c)
                 return self.send_json({"ok":True,"evidence":fp})
+            if self.path=="/api/storage-import":
+                if int(self.headers.get("Content-Length","0") or 0)>_MAX_BACKUP_BYTES: return self.send_json({"ok":False,"message":"备份文件过大（最大 512 MB）"},413)
+                length=int(self.headers.get("Content-Length","0") or 0)
+                envelope=("Content-Type: {}\r\nMIME-Version: 1.0\r\n\r\n".format(self.headers.get("Content-Type","")).encode()+self.rfile.read(length))
+                parts=list(BytesParser(policy=email_policy.default).parsebytes(envelope).iter_parts())
+                fields={p.get_param("name",header="content-disposition"):p for p in parts}
+                if (fields.get("confirm").get_content() if fields.get("confirm") else "")!="true": return self.send_json({"ok":False,"message":"导入前必须明确确认"},400)
+                item=fields.get("file"); filename=item.get_filename() if item else ""
+                if not filename.lower().endswith(".tvbackup"): return self.send_json({"ok":False,"message":"请选择 .tvbackup 完整备份"},400)
+                fd,tmp=tempfile.mkstemp(suffix=".tvbackup",dir=APP_DIR)
+                try:
+                    with os.fdopen(fd,"wb") as f: f.write(item.get_payload(decode=True) or b"")
+                    STORE.import_complete(tmp)
+                finally:
+                    try: os.remove(tmp)
+                    except OSError: pass
+                return self.send_json({"ok":True,"message":"完整备份已恢复，请重启应用"})
             data=self.read_json()
             if self.path=="/api/theme":
                 global UI_THEME
                 UI_THEME='dark' if data.get('theme')=='dark' else 'light'
                 set_native_dark_mode(UI_THEME=='dark')
                 return self.send_json({"ok":True})
+            if self.path=="/api/storage-backup":
+                path=STORE.create_backup("manual"); return self.send_json({"ok":True,"path":path,"message":"备份已创建"})
+            if self.path=="/api/storage-export":
+                os.makedirs(P["exports"],exist_ok=True)
+                path=os.path.join(P["exports"],"task-verge-{}.tvbackup".format(datetime.now().strftime("%Y%m%d-%H%M%S")))
+                STORE.export_complete(path); return self.send_json({"ok":True,"path":path,"message":"完整备份已导出"})
+            if self.path=="/api/storage-restore":
+                if data.get("confirm") is not True: return self.send_json({"ok":False,"message":"恢复前必须明确确认"},400)
+                allowed={item["path"] for item in STORE.list_backups()}; path=task_text(data.get("path"))
+                if path not in allowed: return self.send_json({"ok":False,"message":"备份不存在或不受信任"},400)
+                STORE.restore_backup(path); return self.send_json({"ok":True,"message":"备份已恢复，请重启应用"})
             if self.path=="/api/event":
                 evlog(c,task_text(data.get("kind","ui_event"))[:40] or "ui_event",task_text(data.get("message",""))[:200],data.get("extra") if isinstance(data.get("extra"),dict) else {})
                 sc(c); return self.send_json({"ok":True})
@@ -2161,6 +2222,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try: active_goal=int(data.get("active_goal",0) or 0)
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"当前目标索引必须是数字"},400)
                 save_goal_state(c); c["active_goal"]=active_goal; ensure_goal_state(c); sc(c); return self.send_json({"ok":True})
+            if self.path=="/api/goal-delete":
+                ensure_goal_state(c); save_goal_state(c)
+                goals=c.get("goals",[])
+                if len(goals)<=1: return self.send_json({"ok":False,"message":"至少保留一个目标"},400)
+                try: index=int(data.get("index",-1))
+                except (TypeError,ValueError): return self.send_json({"ok":False,"message":"目标索引必须是数字"},400)
+                if index<0 or index>=len(goals): return self.send_json({"ok":False,"message":"目标不存在"},404)
+                removed=copy.deepcopy(goals[index]); removed["archived_at"]=datetime.now().isoformat()
+                removed["archive_reason"]="用户删除"
+                c.setdefault("archived_goals",[]).append(removed)
+                old_active=int(c.get("active_goal",0) or 0)
+                c["goals"]=goals[:index]+goals[index+1:]
+                c["active_goal"] = old_active-1 if index<old_active else min(old_active,len(c["goals"])-1)
+                c["goal"]=""; norm_goals(c); ensure_goal_state(c)
+                evlog(c,"goal_archive","目标已删除并归档",{"goal_id":removed.get("id"),"goal":removed.get("title")})
+                sc(c)
+                return self.send_json({"ok":True,"archived_goal":removed,"active_goal":c.get("active_goal",0)})
             if self.path=="/api/focus-policy":
                 p=c.setdefault("focus_guard",copy.deepcopy(CFG0["focus_guard"])); action=task_text(data.get("action"))
                 if action=="pause":
@@ -2189,7 +2267,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 subprocess.Popen([app["path"]],creationflags=_CNW)
                 return self.send_json({"ok":True})
             if self.path=="/api/generate":
-                job=start_gen_job(); return self.send_json({"ok":True,**job})
+                job=start_gen_job(); return self.send_json(job, 200 if job.get("ok") else 400)
             if self.path=="/api/reinfer-apps":
                 if _APPRULES and not valid_deepseek_key(dk()):
                     start_infer_apps(); return self.send_json({"ok":True,"message":"offline app matching started"})
@@ -2259,6 +2337,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try: return self.send_json(evaluate_task(int(data.get("idx",-1))))
                 except (TypeError,ValueError) as e: return self.send_json({"ok":False,"message":str(e)},400)
                 except AIError as e: return self.send_json({"ok":False,"message":"AI {}: {}".format(e.kind,e)},502)
+            if self.path=="/api/remediate-task":
+                try: i=int(data.get("idx", data.get("task_idx", -1)))
+                except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
+                recovery=ACCEPTANCE.ensure_remediation(c, i)
+                if not recovery: return self.send_json({"ok":False,"message":"无法创建补救任务"},400)
+                sync_pct(c); save_goal_state(c); evlog(c,"remediation_task","创建补救任务",{"idx":i,"task_id":recovery.get("id","")}); sc(c)
+                return self.send_json({"ok":True,"task":recovery})
             if self.path=="/api/manual-accept":
                 try: i=int(data.get("task_idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
@@ -2315,6 +2400,9 @@ def run_native_window(url):
         return False
     try:
         desktop_url = url + ("&" if "?" in url else "?") + "desktop_token=" + urllib.parse.quote(_DESKTOP_CLAIM_SECRET)
+        try: ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TaskVerge.Desktop")
+        except Exception: pass
+        icon_path=os.path.join(WEB_DIR, "taskverge.ico")
         _MAIN_WINDOW = webview.create_window("Task Verge", desktop_url, width=1160, height=760,
                                              min_size=(900, 640), maximized=True, confirm_close=False)
         def hide_to_tray():
@@ -2322,7 +2410,13 @@ def run_native_window(url):
             except Exception: pass
             return False
         _MAIN_WINDOW.events.closing += hide_to_tray
-        webview.start(icon=os.path.join(WEB_DIR, "taskverge.ico"))
+        def apply_icon():
+            def retry():
+                for _ in range(25):
+                    if set_window_icon(): return
+                    time.sleep(0.12)
+            threading.Thread(target=retry, daemon=True).start()
+        webview.start(func=apply_icon, icon=icon_path)
         return True
     except Exception as e:
         _bl("native webview failed: " + repr(e))
@@ -2337,6 +2431,26 @@ def focus_window(title):
     user32.ShowWindow(hwnd,9)
     user32.SetForegroundWindow(hwnd)
     return True
+
+def set_window_icon(title="Task Verge"):
+    """Apply Task Verge.ico to the native window so source-mode pythonw is not shown on the taskbar."""
+    if os.name!="nt": return False
+    hwnd=find_window(title)
+    if not hwnd: return False
+    try:
+        u32=ctypes.windll.user32
+        u32.LoadImageW.restype=ctypes.c_void_p
+        u32.SendMessageW.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_size_t,ctypes.c_void_p]
+        u32.SendMessageW.restype=ctypes.c_ssize_t
+        path=ico()
+        small=u32.LoadImageW(None,path,1,16,16,0x10)
+        big=u32.LoadImageW(None,path,1,32,32,0x10) or small
+        if not (small or big): return False
+        if small: u32.SendMessageW(hwnd,0x0080,0,small)
+        if big: u32.SendMessageW(hwnd,0x0080,1,big)
+        return True
+    except Exception as e:
+        _bl("window icon: " + repr(e)); return False
 
 def set_native_dark_mode(enabled):
     """Keep the WebView2 title bar in sync with the page theme."""
@@ -2452,7 +2566,8 @@ def web_tray(url, server):
 def run_web():
     global TASKS, AGENTS, FEEDBACK, ACCEPTANCE
     TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
-                        save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome)
+                        save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
+                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started)
     AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
                           start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
     FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
@@ -2873,7 +2988,8 @@ if __name__ == "__main__":
             crash_mark_running()
             atexit.register(crash_mark_clean)
             TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
-                                save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome)
+                                save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
+                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started)
             AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
                                   start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
             FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
@@ -2882,7 +2998,12 @@ if __name__ == "__main__":
                                            save=save_goal_state, event=evlog, outcome=adaptive.record_outcome,
                                            learning_outcome=adaptive.record_learning_outcome)
             WEBAPP = WebApp()
-            s = BoundedHTTPServer(("127.0.0.1", 0), Handler)
+            # Port zero asks the OS for an available port; CI then publishes the
+            # resolved URL for every downstream test step. A positive explicit
+            # TASKVERGE_PORT remains useful for local/remote smoke tooling.
+            try: ci_port = int(os.environ.get("TASKVERGE_PORT", "0") or 0)
+            except (TypeError, ValueError): ci_port = 0
+            s = BoundedHTTPServer(("127.0.0.1", ci_port), Handler)
             url = "http://127.0.0.1:{}/".format(s.server_port)
             try:
                 with open(P["url"], "w", encoding="utf-8") as f: f.write(url)

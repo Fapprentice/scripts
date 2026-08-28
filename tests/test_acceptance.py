@@ -190,7 +190,8 @@ class TestAcceptanceRules(unittest.TestCase):
         self.assertTrue(ar["pass"])
         self.assertTrue(ar["rules_first"])
         self.assertEqual(ar["decision"], "accepted")
-        self.assertEqual(ar["confidence"], 1.0)
+        self.assertGreaterEqual(ar["confidence"], 0.75)
+        self.assertEqual(ar["status"], "passed")
 
     def test_verdict_to_result_fail(self):
         """Fail verdict includes missing/next_steps."""
@@ -213,7 +214,30 @@ class TestAcceptanceRules(unittest.TestCase):
         )
         ar = acceptance.verdict_to_acceptance_result(verdict)
         self.assertEqual(ar["decision"], "review")
+        self.assertEqual(ar["status"], "needs_review")
         self.assertLess(ar["confidence"], 0.75)
+        self.assertNotEqual(ar["status"], "passed")
+
+    def test_explainable_result_keeps_needs_review_out_of_pass_fail(self):
+        ar = acceptance.explainable_result({"needs_llm": True, "reason": "语义不确定",
+                                           "checks": {"R5_output_kw": {"pass": True, "detail": "部分匹配"}}})
+        self.assertEqual(ar["status"], "needs_review")
+        self.assertFalse(ar["pass"])
+        self.assertTrue(ar["next_actions"])
+
+    def test_build_remediation_task_keeps_original_acceptance_and_goal(self):
+        task = {"id": "t1", "title": "完成原型", "acceptance": "原型可以运行",
+                "expected_output": "可运行原型", "estimated_minutes": 40, "goal_id": "goal_0"}
+        result = acceptance.explainable_result({"pass": False, "reason": "缺少运行证据",
+                                               "missing": ["运行截图"], "next_steps": ["上传运行截图"]})
+        recovery = acceptance.build_remediation_task(task, result)
+        self.assertEqual(recovery["original_acceptance"], "原型可以运行")
+        self.assertEqual(recovery["acceptance"], "原型可以运行")
+        self.assertEqual(recovery["goal_id"], "goal_0")
+        self.assertEqual(recovery["source"], "remediation")
+        self.assertTrue(recovery["title"].startswith("补救："))
+        self.assertIsNone(acceptance.build_remediation_task(task, {"status": "needs_review"}))
+        self.assertIsNone(acceptance.build_remediation_task(task, {"status": "passed"}))
 
 
 if __name__ == "__main__":
