@@ -558,10 +558,7 @@ function companionSnapshot(){
   const doing=tasks.find(t=>!t.done && t.status==='doing');
   const next=tasks.find(t=>!t.done && t.status!=='skipped');
   const last=(state.motivation?.history||[]).slice(-1)[0]||{};
-  const points=Number(state.motivation?.points)||0;
   const streak=Number(state.motivation?.streak)||0;
-  const energy=Math.max(12, Math.min(100, 58 + Math.round(points/2) + (doing?18:0) - (state.break_active?8:0)));
-  const bond=Math.max(18, Math.min(100, 24 + streak*14 + tasks.filter(t=>t.done).length*8));
   let mood='idle', moodLabel='待机', speech=pickLine(COMPANION_LINES.idle), line='还没有进行中的任务时，我会在这里等你开始。';
   let primary={action:'focus', label:'开始专注', hidden:false};
   let secondary={action:'rest', label:'休息一下', hidden:false};
@@ -600,7 +597,7 @@ function companionSnapshot(){
     if(mood==='feed') moodLabel='进食';
     if(mood==='talk') moodLabel='碎碎念';
   }
-  return {mood, moodLabel, speech, line, energy, bond, primary, secondary, playing, emote: playing ? companionPlay.emote : '', anim: playing ? companionPlay.anim : ''};
+  return {mood, moodLabel, speech, line, primary, secondary, playing, emote: playing ? companionPlay.emote : '', anim: playing ? companionPlay.anim : ''};
 }
 
 function renderCompanion(){
@@ -620,8 +617,6 @@ function renderCompanion(){
   if(!snap.playing) set('#companionLine', snap.line);
   const emote=$('#companionEmote');
   if(emote){ emote.textContent=snap.emote||''; emote.hidden=!snap.emote; }
-  const energy=$('#companionEnergy'); if(energy) energy.style.width=snap.energy+'%';
-  const bond=$('#companionBond'); if(bond) bond.style.width=snap.bond+'%';
   const primary=$('#companionPrimary');
   if(primary){ primary.dataset.companion=snap.primary.action; primary.textContent=snap.primary.label; primary.hidden=!!snap.primary.hidden; }
   const secondary=$('#companionSecondary');

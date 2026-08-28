@@ -7,7 +7,7 @@ The product loop is: define and clarify a goal → establish measurable standard
 ## Runtime
 
 - Windows desktop app: native WebView2 window backed by the local `task-panel.pyw` service
-- Source mode needs Python 3.11+ and dependencies from `requirements.txt`; packaged `TaskVerge.exe` is self-contained
+- Source mode needs Python 3.11+ and `requirements.txt`; add `requirements-dev.txt`, `requirements-e2e.txt`, or `requirements-build.txt` only for tests, browser E2E, or packaging respectively. Packaged `TaskVerge.exe` is self-contained
 - DeepSeek API key from `.env` or Hermes env files
 - Docker Desktop is required for Python deliverable execution checks (optional — only for AI acceptance)
 
@@ -38,10 +38,12 @@ The product loop is: define and clarify a goal → establish measurable standard
 ## Web address and tests
 
 - Normal desktop mode uses `http://127.0.0.1:64161/` by default. Set `TASKVERGE_PORT` to override it; a busy port falls back to a random local port.
-- CI mode (`python task-panel.pyw --ci`) intentionally uses a random port. Pass that URL explicitly as `TASKVERGE_TEST_URL` when running API or browser tests.
+- CI mode (`python task-panel.pyw --ci`) binds `TASKVERGE_PORT` when set (use `0` for an OS-chosen port), prints `CI_URL=http://127.0.0.1:<resolved-port>/`, and writes the same URL to `task-panel.url`. Export that resolved URL as `TASKVERGE_TEST_URL` before API or browser tests.
 - API and browser E2E suites claim the single backend session; run them against separate CI instances (or run the suites separately).
 - The default test command is safe and does not attach to the user's live instance: `python -m pytest -q tests`.
+- Syntax gate: `python -m ruff check --select E9,F63,F7,F82 .` plus `node --check web/api.js`, `node --check web/views.js`, and `node --check web/app.js`.
 - The AI release gate is `python evaluation.py --run`; it exits non-zero on a regression and is enforced by GitHub Actions.
+- CI readiness probes public `/api/heartbeat`; authenticated `/api/state` still requires an `X-Session` token from `/api/claim`.
 - AI quality evaluation is a backend and CI capability; it adds no page, button, modal, or first-screen content to the desktop UI.
 
 ## Runtime modes
@@ -55,12 +57,14 @@ The product loop is: define and clarify a goal → establish measurable standard
 
 ## Local Data
 
-- `%LOCALAPPDATA%\TaskVerge\task-config.json`: main app state (goals, tasks, apps, coach, time blocks, etc.)
-- `%LOCALAPPDATA%\TaskVerge\history.json`: acceptance history records (capped at 500)
-- `%LOCALAPPDATA%\TaskVerge\fgtime.json`: foreground app time (aggregated from 2s samples)
+- `%LOCALAPPDATA%\TaskVerge\taskverge.db`: SQLite is the only source of truth. JSON documents inside the database are compatibility snapshots, not a second writable store.
+- `%LOCALAPPDATA%\TaskVerge\attachments\`: SHA-256-addressed, deduplicated task deliverables
+- `%LOCALAPPDATA%\TaskVerge\backups\`: automatic, daily, weekly, monthly, manual, pre-migration, and pre-restore database backups. Restore and complete import first write a pre-restore snapshot so the previous database can be put back.
+- `%LOCALAPPDATA%\TaskVerge\trash\`: recoverable attachment deletions retained for 30 days
+- `%LOCALAPPDATA%\TaskVerge\exports\`: complete `.tvbackup` packages containing the database, attachments, and integrity manifest
+- `%LOCALAPPDATA%\TaskVerge\legacy-json\`: read-only copies made when legacy JSON data is imported
 - `%LOCALAPPDATA%\TaskVerge\crash.log`: crash recovery marker (`running` / `clean exit` / traceback)
 - `%LOCALAPPDATA%\TaskVerge\task-panel.pid`: current running process info for single-instance guard
-- `%LOCALAPPDATA%\TaskVerge\uploads\`: uploaded task deliverables (organized by goal_id/task_id)
 - `%LOCALAPPDATA%\TaskVerge\icon-cache\`: extracted app icons (SHA1-named PNGs)
 - `%LOCALAPPDATA%\TaskVerge\boot.log`: startup diagnostics log
 - `%LOCALAPPDATA%\TaskVerge\watchdog.log`: start/stop/error log
@@ -82,7 +86,7 @@ tray APIs, Startup folder paths, and browser app windows. Keep that explicit.
 
 For signed releases, set `TASKVERGE_SIGNING_THUMBPRINT` to a code-signing certificate in `Cert:\CurrentUser\My`. Optionally set `TASKVERGE_TIMESTAMP_URL`; an invalid signature fails the build.
 
-Install with `python -m pip install -r requirements.txt pywebview pyinstaller`, then run:
+Install packaging tools with `python -m pip install -r requirements-build.txt`, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -ZipOnly

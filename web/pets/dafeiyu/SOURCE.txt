@@ -1,0 +1,5 @@
+Dafeiyu companion sprites
+Source: https://github.com/1190fasheqi/dafeiyu-pet
+License: MIT
+Files: front.png / side.png / back.png / icon.png
+  copied from sprites/正面_238.png, sprites/侧面_238.png, sprites/背面_238.png, sprites/icon.png

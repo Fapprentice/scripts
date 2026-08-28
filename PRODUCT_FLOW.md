@@ -40,6 +40,9 @@
 
 ```text
 python -m py_compile adaptive.py utils.py task-panel.pyw
+python -m ruff check --select E9,F63,F7,F82 .
+node --check web/api.js
+node --check web/views.js
 node --check web/app.js
 python -m pytest -q tests
 ```

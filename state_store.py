@@ -219,7 +219,7 @@ class SqliteStore:
         return "{}-{}-{}".format(prefix, index, hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12])
 
     def _project_state(self, db, state, now):
-        # Replace projections inside the same transaction as the compatibility snapshot.
+        # SQLite is the source of truth; JSON documents are compatibility snapshots replaced in the same transaction as relational projections.
         for table in ("skill_prerequisites","task_criteria","answer_keys","evidence","acceptance_runs",
                       "focus_sessions","feedback","review_logs","skills","materials","tasks",
                       "success_criteria","constraints","events","motivation_ledger","goals"):

@@ -18,10 +18,10 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 |---|---|
 | `task-panel.pyw` | 进程入口、HTTP 路由、桌面窗口、托盘、前台监测与模块编排 |
 | `utils.py` | 数据归一化、任务基础模型和通用纯函数 |
-| `state_store.py` | JSON 状态的加载、压缩和原子保存 |
-| `runtime.py` | 作业队列与运行时辅助能力 |
-| `acceptance.py` | 确定性验收规则、材料型任务答案判定 |
-| `acceptance_service.py` | 验收用例编排 |
+| `state_store.py` | SQLite 事务存储、旧 JSON 迁移、内容寻址附件、完整性检查、滚动备份与恢复 |
+| `runtime.py` | 作业队列与有界 HTTP 线程池 |
+| `acceptance.py` | 确定性验收规则、材料型任务答案判定、补救任务构造 |
+| `acceptance_service.py` | 验收结果持久化、补救任务插入与去重 |
 | `adaptive.py` | 目标完整度、能力诊断、自适应任务生成和反馈决策 |
 | `learning.py` | FSRS 调度、知识点状态、诊断任务与执行材料生成 |
 | `task_service.py` | 任务增删改、状态和证据操作 |
@@ -36,7 +36,16 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 
 ## 3. 前端
 
-`web/index.html`、`web/app.js`、`web/app.css` 构成无构建步骤的 SPA，包含三个一级视图：
+无构建步骤的 SPA：`web/index.html` 按顺序加载 `web/views.js`、`web/api.js`、`web/app.js`，样式在 `web/app.css`。
+
+| 文件 | 职责 |
+|---|---|
+| `web/views.js` | 弹窗和 Toast 的唯一实现 |
+| `web/api.js` | 会话领取、请求、上传和心跳的唯一实现 |
+| `web/app.js` | 页面状态、任务流和陪伴展示；通过别名调用上述模块 |
+| `web/pets/dafeiyu/` | 陪伴立绘；纯展示，不持久化精力或默契 |
+
+三个一级视图：
 
 - **今日执行**：当前任务、计时、任务材料弹窗、页面作答、证据上传和验收
 - **记录**：复盘摘要、知识图谱、最近 12 个月的月度热力图，以及归档/事件/退出记录弹窗
@@ -88,6 +97,7 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 - 学习与反馈：`/api/task-rating`、`/api/feedback`、`/api/next-cycle`
 - 运行设置：`/api/focus-policy`、`/api/privacy-consent`、`/api/deepseek-key`
 - 历史：`/api/archive`、`/api/archive-delete`、`/api/event`、`/api/export`
+- 数据安全：`/api/storage-status`、`/api/storage-backup`、`/api/storage-export`、`/api/storage-import`、`/api/storage-restore`
 - Agent：`/api/agent-start`、`/api/agent-state`、`/api/agent-confirm`、`/api/agent-stop`
 
 完整路由以 `task-panel.pyw` 中的 Handler 为准。
@@ -96,14 +106,18 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 
 | 路径 | 内容 |
 |---|---|
-| `task-config.json` | 目标、任务、设置、学习状态和按目标隔离的数据 |
-| `history.json` | 验收历史，最多 500 条 |
-| `fgtime.json` | 前台应用聚合时间 |
-| `uploads/` | 按目标和任务隔离的交付物 |
+| `taskverge.db` | SQLite 是唯一数据真源；`documents` 表里的 JSON 只是兼容快照，和关系投影在同一事务提交 |
+| `attachments/` | 以 SHA-256 寻址并自动去重的交付物 |
+| `backups/` | 自动 48、每日 14、每周 8、每月 12、迁移前 5、恢复前 10 份滚动备份，以及手动备份 |
+| `trash/` | 删除后保留 30 天的附件 |
+| `exports/` | 包含数据库、附件与哈希清单的完整 `.tvbackup` |
+| `legacy-json/` | 首次迁移时保留的旧 JSON 只读副本 |
 | `task-verge.key` | 当前 Windows 用户 DPAPI 加密的 DeepSeek Key |
 | `crash.log` / `boot.log` / `watchdog.log` | 恢复和运行诊断 |
 
 所有路径位于 `%LOCALAPPDATA%\TaskVerge`，源代码目录不作为用户数据目录。
+
+数据库使用标准库 `sqlite3`、回滚日志、`synchronous=FULL`、外键和 5 秒忙等待；当前运行时升级到 SQLite 3.51.3 之前不启用多连接 WAL。应用启动会执行快速完整性检查；损坏时不会用空状态覆盖，而是列出最近有效备份并在用户确认后恢复，同时保留损坏原件。详细设置中的“数据管理与恢复”可检查状态、立即备份、导出完整备份或恢复最近备份。
 
 ## 8. AI 质量评测
 
@@ -122,11 +136,14 @@ python task-panel.pyw
 # 安全的默认测试
 python -m pytest -q tests
 
+# 语法门禁
+python -m ruff check --select E9,F63,F7,F82 .
+node --check web/api.js
+node --check web/views.js
+node --check web/app.js
+
 # AI 黄金集与发布门禁
 python evaluation.py --run
-
-# 前端语法
-node --check web/app.js
 
 # 便携包
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -ZipOnly
