@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 ENERGY_MIN, ENERGY_MAX = 0, 100
 BOND_MIN, BOND_MAX = 0, 100

@@ -1,6 +1,6 @@
 # Task Verge — Code Wiki
 
-> 当前架构说明，核对日期：2026-08-24。产品行为契约见 `PRODUCT_FLOW.md`，领域词汇见 `CONTEXT.md`。
+> 当前架构说明，核对日期：2026-08-29。产品行为契约见 `PRODUCT_FLOW.md`，领域词汇见 `CONTEXT.md`。
 
 ## 1. 系统形态
 

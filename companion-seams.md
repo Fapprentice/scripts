@@ -1,11 +1,14 @@
-# 大肥鱼陪伴接缝调研（只读）
+# 大肥鱼陪伴接缝调研（历史基线，只读）
 
-> 核对日期：对照仓库当前源码。产品契约见 `PRODUCT_FLOW.md`，领域词汇见 `CONTEXT.md`，架构见 `CODE_WIKI.md`。
+> 历史核对日期：2026-08-24。本文件记录陪伴持久化落地前的 v1 接缝调查，不代表当前实现。
+> 当前行为以 `CONTEXT.md`、`CODE_WIKI.md`、`companion_service.py` 和 `tests/test_companion.py` 为准。
 > 范围：现有 SQLite schema、motivation 账本、AcceptanceService、TaskService、companion UI。不改代码。
+
+> **状态说明**：本文中的“没有 companion 表/API”“纯展示”“schema v2 待实现”等内容，均是当时的设计基线，已经由后续提交实现并取代。保留本文仅用于追溯接缝决策和风险；不要把其中的待办清单当作当前缺失功能。
 
 ## 结论（给设计/实现）
 
-大肥鱼今天是**纯展示 + 前端瞬时演出**。戳 / 喂 / 说话只改 `companionPlay` 内存；专注 / 休息 / 验收走已有任务与休息 API，但**没有任何 companion 行、表或 `/api/companion*`**。养成必须新建 schema v2 与 CompanionService，并挂到现有验收 / 任务状态 / 休息落盘点上。
+当时的大肥鱼是**纯展示 + 前端瞬时演出**。本结论仅适用于 v1 基线；当前版本已经通过 `CompanionService`、schema v2 及 `/api/companion*` 完成持久化养成，并接入任务、休息和验收事务。
 
 硬约束（不可破）：
 
@@ -20,7 +23,7 @@
 
 ## 1. 当前 companion 交互：哪些只在前端内存
 
-UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnapshot` / `renderCompanion` / `runCompanion` / `playCompanion`。立绘：`web/pets/dafeiyu/{front,side,back,icon}.png`（MIT，来源见 `web/pets/dafeiyu/SOURCE.txt`）。`CODE_WIKI.md` §3 写明：「纯展示，不持久化精力或默契」。
+UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnapshot` / `renderCompanion` / `runCompanion` / `playCompanion`。立绘：`web/pets/dafeiyu/{front,side,back,icon}.png`（MIT，来源见 `web/pets/dafeiyu/SOURCE.txt`）。本文引用的是 v1 前端形态；当前持久状态由 `/api/state.companion` 提供。
 
 | 动作 | UI 入口 | 实际效果 | 是否持久化 | 后端 |
 |---|---|---|---|---|
@@ -43,7 +46,7 @@ UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnap
 5. 否则有下一件 → idle/待命
 6. 否则无目标 → 待机，引导去设置
 
-`companionPlay` 在演出未到期时覆盖 mood/speech，到期后无存储，刷新即消失。`/api/state` **不返回 companion**。不存在 `GET /api/companion`、`POST /api/companion-event`。
+在 v1 基线中，`companionPlay` 到期后无存储，刷新即消失；当前版本仅保留短时演出为前端状态，精力、默契、饥饿、生命、经验、等级和事件账本由 SQLite 持久化，并由 `/api/state.companion` 返回。
 
 前端已复用、实现必须继续走的挂钩（不要另做一套开始/休息）：
 
@@ -57,7 +60,7 @@ UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnap
 
 ### 2.1 版本与迁移
 
-- `state_store.py`：`APPLICATION_ID = 0x54564745`，**`SCHEMA_VERSION = 1`**，`MIGRATIONS = {1: "initial_schema"}`
+- `state_store.py`：历史基线为 **`SCHEMA_VERSION = 1`**、`MIGRATIONS = {1: "initial_schema"}`；当前版本为 schema v2，并包含 companion 迁移
 - 打开已有库且 `PRAGMA user_version < SCHEMA_VERSION` 时先 `create_backup("pre-migration")`
 - 升级循环：`range(current+1, SCHEMA_VERSION+1)` 写入 `schema_migrations`，再 `PRAGMA user_version=SCHEMA_VERSION`
 - **库比应用新** → `StorageCorruptionError("database schema is newer than this application")`，禁止用空库覆盖
@@ -69,7 +72,7 @@ UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnap
 
 当前表：`documents`, `schema_migrations`, `attachments`, `goals`, `success_criteria`, `constraints`, `tasks`, `task_criteria`, `materials`, `answer_keys`, `evidence`, `acceptance_runs`, **`focus_sessions`（只建/只删，从不 INSERT）**, `feedback`, `skills`, `skill_prerequisites`, `review_logs`, `events`, **`motivation_ledger`**, `app_usage_daily`, `eval_samples`, `deleted_items`。
 
-**没有 companion / pets / energy 表。**
+历史基线**没有 companion / pets / energy 表**；当前版本已有 `companions` 与 `companion_events`，并由 `CompanionService` 维护。
 
 投影规则（`_project_state`）：
 
