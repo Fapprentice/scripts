@@ -1,5 +1,8 @@
 Dafeiyu companion sprites
 Source: https://github.com/1190fasheqi/dafeiyu-pet
 License: MIT
-Files: front.png / side.png / back.png / icon.png
+Original three-view: front.png / side.png / back.png / icon.png
   copied from sprites/正面_238.png, sprites/侧面_238.png, sprites/背面_238.png, sprites/icon.png
+Action/mood poses generated from those three-views:
+  idle.png focus.png rest.png sleepy.png hungry.png happy.png cheer.png fainted.png
+  poke.png feed-fish.png feed-cake.png feed-candy.png talk.png spend.png stage-fry.png

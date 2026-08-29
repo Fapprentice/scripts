@@ -9,12 +9,18 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 APPLICATION_ID = 0x54564745
-SCHEMA_VERSION = 1
-MIGRATIONS = {1: "initial_schema"}
+SCHEMA_VERSION = 2
+MIGRATIONS = {1: "initial_schema", 2: "companion_growth"}
+COMPANION_ID = "dafeiyu"
+COMPANION_NAME = "大肥鱼"
+COMPANION_DEFAULT_ENERGY = 70
+COMPANION_DEFAULT_BOND = 20
+COMPANION_DOCUMENT = "companion.json"
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -86,6 +92,26 @@ class SqliteStore:
         db.execute("PRAGMA busy_timeout=5000"); db.execute("PRAGMA journal_mode=DELETE")
         return db
 
+    @contextmanager
+    def _atomic(self, immediate=False):
+        # The store lock serializes companion read-modify-write. The connection
+        # commits on success and rolls back on error via _ClosingConnection.
+        with self._lock, self._connect() as db:
+            yield db
+
+    def _run_companion_mutator(self, db, mutator):
+        self._ensure_companion_row(db)
+        row = self._companion_from_row(db.execute(
+            "SELECT id,name,energy,bond,day,poke_used,feed_used,talk_used,last_poke_at,last_feed_at,last_talk_at,last_settle_at,last_rest_start_at,payload,updated_at FROM companions WHERE id=?",
+            (COMPANION_ID,)).fetchone())
+        txn = _CompanionTxn(self, db)
+        extra = mutator(row, txn)
+        return extra
+
+    def mutate_companion(self, mutator):
+        with self._atomic(immediate=True) as db:
+            return self._run_companion_mutator(db, mutator)
+
     def _initialize(self):
         schema = """
         CREATE TABLE IF NOT EXISTS documents(name TEXT PRIMARY KEY,payload TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
@@ -110,6 +136,10 @@ class SqliteStore:
         CREATE TABLE IF NOT EXISTS app_usage_daily(day TEXT NOT NULL,app TEXT NOT NULL,seconds INTEGER NOT NULL,PRIMARY KEY(day,app));
         CREATE TABLE IF NOT EXISTS eval_samples(id TEXT PRIMARY KEY,payload TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deleted_items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,deleted_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,energy INTEGER NOT NULL,bond INTEGER NOT NULL,day TEXT NOT NULL,poke_used INTEGER NOT NULL DEFAULT 0,feed_used INTEGER NOT NULL DEFAULT 0,talk_used INTEGER NOT NULL DEFAULT 0,last_poke_at TEXT,last_feed_at TEXT,last_talk_at TEXT,last_settle_at TEXT,last_rest_start_at TEXT,payload TEXT NOT NULL DEFAULT '{}',updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS companion_events(id TEXT PRIMARY KEY,ts TEXT NOT NULL,kind TEXT NOT NULL,treat TEXT,delta_energy INTEGER NOT NULL DEFAULT 0,delta_bond INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL,task_id TEXT,goal_id TEXT,dedupe_key TEXT,source TEXT,payload TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_companion_events_ts ON companion_events(ts);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_events_dedupe ON companion_events(dedupe_key) WHERE dedupe_key IS NOT NULL;
         """
         with self._lock, self._connect() as db:
             db.executescript(schema)
@@ -128,6 +158,7 @@ class SqliteStore:
                 for version in range(current + 1, SCHEMA_VERSION + 1):
                     db.execute("INSERT OR REPLACE INTO schema_migrations VALUES (?,?,?,?)", (version, version - 1, MIGRATIONS[version], datetime.now().isoformat()))
                 db.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
+            self._ensure_companion_row(db)
 
     def _stored_schema_version(self):
         with sqlite3.connect(str(self.db_path), factory=_ClosingConnection) as db:
@@ -199,9 +230,12 @@ class SqliteStore:
         self.save(str(legacy), data, backup=False)
         return data if data is not None else ({} if default is None else default)
 
-    def save(self, path, data, backup=True):
-        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")); now = datetime.now().isoformat()
-        with self._lock, self._connect() as db:
+    def save(self, path, data, backup=True, companion_mutator=None):
+        now = datetime.now().isoformat()
+        with self._atomic(immediate=True) as db:
+            if companion_mutator:
+                self._run_companion_mutator(db, companion_mutator)
+            payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             db.execute("""INSERT INTO documents(name,payload,revision,updated_at) VALUES (?,?,1,?)
                 ON CONFLICT(name) DO UPDATE SET payload=excluded.payload,revision=documents.revision+1,updated_at=excluded.updated_at""",
                        (self._key(path), payload, now))
@@ -266,6 +300,10 @@ class SqliteStore:
         for mi, entry in enumerate(history if isinstance(history,list) else []):
             goal_id = str(entry.get("goal_id")) if isinstance(entry,dict) and str(entry.get("goal_id")) in goal_ids else None
             db.execute("INSERT INTO motivation_ledger VALUES (?,?,?)", (self._row_id("motivation",entry,mi),goal_id,self._json(entry)))
+        # Companion tables are independent of this DELETE/INSERT projection.
+        # A JSON snapshot is written in the same transaction for restore/export only.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companions'").fetchone():
+            self._snapshot_companion_document(db, now)
         models = state.get("user_models_by_goal", {}) if isinstance(state.get("user_models_by_goal"),dict) else {}
         for goal_id, model in models.items():
             if not isinstance(model,dict): continue
@@ -292,6 +330,168 @@ class SqliteStore:
             if isinstance(seconds,(int,float)):
                 day, app = (str(key).split("|",1)+[""])[:2] if "|" in str(key) else ("unknown",str(key))
                 db.execute("INSERT INTO app_usage_daily VALUES (?,?,?)", (day,app,int(seconds)))
+
+    def _default_companion_row(self, now=None):
+        now = now or datetime.now().isoformat()
+        return {
+            "id": COMPANION_ID, "name": COMPANION_NAME,
+            "energy": COMPANION_DEFAULT_ENERGY, "bond": COMPANION_DEFAULT_BOND,
+            "day": datetime.now().date().isoformat(),
+            "poke_used": 0, "feed_used": 0, "talk_used": 0,
+            "last_poke_at": None, "last_feed_at": None, "last_talk_at": None,
+            "last_settle_at": now, "last_rest_start_at": None,
+            "payload": {}, "updated_at": now,
+        }
+
+    def _companion_from_row(self, row):
+        if not row:
+            return self._default_companion_row()
+        payload = row[13]
+        if isinstance(payload, str):
+            try: payload = json.loads(payload) if payload else {}
+            except (TypeError, json.JSONDecodeError): payload = {}
+        if not isinstance(payload, dict): payload = {}
+        return {
+            "id": row[0], "name": row[1], "energy": int(row[2] or 0), "bond": int(row[3] or 0),
+            "day": row[4] or datetime.now().date().isoformat(),
+            "poke_used": int(row[5] or 0), "feed_used": int(row[6] or 0), "talk_used": int(row[7] or 0),
+            "last_poke_at": row[8], "last_feed_at": row[9], "last_talk_at": row[10],
+            "last_settle_at": row[11], "last_rest_start_at": row[12],
+            "payload": payload, "updated_at": row[14],
+        }
+
+    def _ensure_companion_row(self, db, now=None):
+        now = now or datetime.now().isoformat()
+        existing = db.execute("SELECT 1 FROM companions WHERE id=?", (COMPANION_ID,)).fetchone()
+        if existing:
+            return
+        row = self._default_companion_row(now)
+        db.execute(
+            "INSERT INTO companions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (row["id"], row["name"], row["energy"], row["bond"], row["day"],
+             row["poke_used"], row["feed_used"], row["talk_used"],
+             row["last_poke_at"], row["last_feed_at"], row["last_talk_at"],
+             row["last_settle_at"], row["last_rest_start_at"], self._json(row["payload"]), row["updated_at"]),
+        )
+        self._snapshot_companion_document(db, now)
+
+    def _companion_document_payload(self, db):
+        row = db.execute("SELECT id,name,energy,bond,day,poke_used,feed_used,talk_used,last_poke_at,last_feed_at,last_talk_at,last_settle_at,last_rest_start_at,payload,updated_at FROM companions WHERE id=?", (COMPANION_ID,)).fetchone()
+        companion = self._companion_from_row(row)
+        events = []
+        for item in db.execute("SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events ORDER BY ts DESC, created_at DESC LIMIT 200"):
+            extra = item[11]
+            if isinstance(extra, str):
+                try: extra = json.loads(extra) if extra else {}
+                except (TypeError, json.JSONDecodeError): extra = {}
+            events.append({
+                "id": item[0], "ts": item[1], "kind": item[2], "treat": item[3],
+                "delta_energy": item[4], "delta_bond": item[5], "reason": item[6],
+                "task_id": item[7], "goal_id": item[8], "dedupe_key": item[9],
+                "source": item[10], "payload": extra if isinstance(extra, dict) else {},
+            })
+        return {"companion": companion, "events": events}
+
+    def _snapshot_companion_document(self, db, now=None):
+        now = now or datetime.now().isoformat()
+        payload = self._json(self._companion_document_payload(db))
+        db.execute("""INSERT INTO documents(name,payload,revision,updated_at) VALUES (?,?,1,?)
+            ON CONFLICT(name) DO UPDATE SET payload=excluded.payload,revision=documents.revision+1,updated_at=excluded.updated_at""",
+                   (COMPANION_DOCUMENT, payload, now))
+
+    def ensure_companion(self):
+        with self._atomic() as db:
+            self._ensure_companion_row(db)
+
+    def load_companion(self):
+        with self._atomic() as db:
+            self._ensure_companion_row(db)
+            row = db.execute("SELECT id,name,energy,bond,day,poke_used,feed_used,talk_used,last_poke_at,last_feed_at,last_talk_at,last_settle_at,last_rest_start_at,payload,updated_at FROM companions WHERE id=?", (COMPANION_ID,)).fetchone()
+        return self._companion_from_row(row)
+
+    def _write_companion_on(self, db, companion, event=None):
+        now = datetime.now().isoformat()
+        companion = dict(companion or {})
+        companion["id"] = companion.get("id") or COMPANION_ID
+        companion["name"] = companion.get("name") or COMPANION_NAME
+        companion["updated_at"] = now
+        db.execute(
+            """INSERT INTO companions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name,energy=excluded.energy,bond=excluded.bond,day=excluded.day,
+            poke_used=excluded.poke_used,feed_used=excluded.feed_used,talk_used=excluded.talk_used,
+            last_poke_at=excluded.last_poke_at,last_feed_at=excluded.last_feed_at,last_talk_at=excluded.last_talk_at,
+            last_settle_at=excluded.last_settle_at,last_rest_start_at=excluded.last_rest_start_at,
+            payload=excluded.payload,updated_at=excluded.updated_at""",
+            (companion["id"], companion["name"], int(companion.get("energy") or 0), int(companion.get("bond") or 0),
+             companion.get("day") or datetime.now().date().isoformat(),
+             int(companion.get("poke_used") or 0), int(companion.get("feed_used") or 0), int(companion.get("talk_used") or 0),
+             companion.get("last_poke_at"), companion.get("last_feed_at"), companion.get("last_talk_at"),
+             companion.get("last_settle_at"), companion.get("last_rest_start_at"),
+             self._json(companion.get("payload") if isinstance(companion.get("payload"), dict) else {}), now),
+        )
+        if event:
+            extra = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            db.execute(
+                "INSERT INTO companion_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (event.get("id") or self._row_id("companion", event, 0), event.get("ts") or now,
+                 event.get("kind") or "event", event.get("treat"),
+                 int(event.get("delta_energy") or 0), int(event.get("delta_bond") or 0),
+                 event.get("reason") or "", event.get("task_id"), event.get("goal_id"),
+                 event.get("dedupe_key"), event.get("source") or "user", self._json(extra), now),
+            )
+        self._snapshot_companion_document(db, now)
+        return companion
+
+    def write_companion(self, companion, event=None):
+        with self._atomic(immediate=True) as db:
+            return self._write_companion_on(db, companion, event)
+
+    def _event_from_row(self, row):
+        if not row:
+            return None
+        extra = row[11]
+        if isinstance(extra, str):
+            try: extra = json.loads(extra) if extra else {}
+            except (TypeError, json.JSONDecodeError): extra = {}
+        return {
+            "id": row[0], "ts": row[1], "kind": row[2], "treat": row[3],
+            "delta_energy": row[4], "delta_bond": row[5], "reason": row[6],
+            "task_id": row[7], "goal_id": row[8], "dedupe_key": row[9],
+            "source": row[10], "payload": extra if isinstance(extra, dict) else {},
+        }
+
+    def find_companion_event(self, dedupe_key, db=None):
+        if not dedupe_key:
+            return None
+        if db is None:
+            with self._atomic() as conn:
+                row = conn.execute("SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events WHERE dedupe_key=?", (dedupe_key,)).fetchone()
+            return self._event_from_row(row)
+        row = db.execute("SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events WHERE dedupe_key=?", (dedupe_key,)).fetchone()
+        return self._event_from_row(row)
+
+    def last_companion_event(self):
+        with self._atomic() as db:
+            row = db.execute("SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events ORDER BY ts DESC, created_at DESC LIMIT 1").fetchone()
+        return self._event_from_row(row)
+
+    def list_companion_events(self, limit=100):
+        limit = max(1, min(int(limit or 100), 500))
+        with self._lock, self._connect() as db:
+            rows = db.execute("SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events ORDER BY ts DESC, created_at DESC LIMIT ?", (limit,)).fetchall()
+        events = []
+        for row in rows:
+            extra = row[11]
+            if isinstance(extra, str):
+                try: extra = json.loads(extra) if extra else {}
+                except (TypeError, json.JSONDecodeError): extra = {}
+            events.append({
+                "id": row[0], "ts": row[1], "kind": row[2], "treat": row[3],
+                "delta_energy": row[4], "delta_bond": row[5], "reason": row[6],
+                "task_id": row[7], "goal_id": row[8], "dedupe_key": row[9],
+                "source": row[10], "payload": extra if isinstance(extra, dict) else {},
+            })
+        return events
 
     def health_report(self):
         """Return a non-throwing, serializable data-health diagnostic report."""
@@ -373,6 +573,7 @@ class SqliteStore:
                 os.replace(tmp, self.db_path)
                 replaced = True
             self._verify_database(self.db_path, quick=False)
+            self._initialize()
             return pre_restore
         except Exception:
             if replaced and pre_restore:
@@ -521,6 +722,7 @@ class SqliteStore:
                 if self.attachments_dir.exists(): os.replace(self.attachments_dir, previous_attachments)
                 os.replace(imported_attachments, self.attachments_dir)
                 os.replace(imported_db, self.db_path)
+            self._initialize()
             self.check_integrity()
         except Exception:
             if backup:
@@ -540,6 +742,43 @@ class SqliteStore:
         try:
             with self.log_path.open("a", encoding="utf-8") as handle: handle.write("{} {}\n".format(datetime.now().isoformat(), message))
         except OSError: pass
+
+
+class _CompanionTxn:
+    """Companion reads/writes that stay on one open SQLite connection."""
+
+    def __init__(self, store, db):
+        self.store = store
+        self.db = db
+
+    def write(self, companion, event=None):
+        return self.store._write_companion_on(self.db, companion, event)
+
+    def write_companion(self, companion, event=None):
+        return self.write(companion, event)
+
+    def find_event(self, dedupe_key):
+        return self.store.find_companion_event(dedupe_key, db=self.db)
+
+    def find_companion_event(self, dedupe_key):
+        return self.find_event(dedupe_key)
+
+    def last_event(self):
+        row = self.db.execute(
+            "SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events ORDER BY ts DESC, created_at DESC LIMIT 1"
+        ).fetchone()
+        return self.store._event_from_row(row)
+
+    def list_events(self, limit=40):
+        limit = max(1, min(int(limit or 40), 500))
+        rows = self.db.execute(
+            "SELECT id,ts,kind,treat,delta_energy,delta_bond,reason,task_id,goal_id,dedupe_key,source,payload FROM companion_events ORDER BY ts DESC, created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self.store._event_from_row(row) for row in rows]
+
+    def list_companion_events(self, limit=40):
+        return self.list_events(limit)
 
 
 def open_store(data_dir, log_path=None, confirm_recovery=None, auto_backup=True):

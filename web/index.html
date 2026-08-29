@@ -65,46 +65,79 @@
 
       <section class="page active" id="dashboard">
         <div class="dash-top">
-          <div class="hero">
-            <div class="ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="50"></circle><circle id="progressArc" cx="60" cy="60" r="50"></circle></svg><strong id="pct">0%</strong></div>
-            <div class="hero-copy">
-              <span id="statusPill">就绪</span>
-              <h2 id="goal">尚未设置目标</h2>
-              <p id="focus">前台：--</p>
-              <div class="hero-stats" id="heroStats">
-                <div><small>完成</small><strong id="heroDoneCount">0</strong></div>
-                <div><small>任务</small><strong id="heroTaskCount">0</strong></div>
-                <div><small>连续</small><strong id="heroStreak">0</strong></div>
-              </div>
-              <div id="breakWidget" class="break-widget">
-                <input id="quickBreakReason" placeholder="休息原因（可选）">
-                <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
-                <button id="quickStartBreak">开始休息</button>
-                <span id="breakInfo"></span>
-              </div>
-            </div>
-          </div>
           <section id="companion" class="companion" data-mood="idle">
             <div class="companion-stage" data-companion="poke" title="戳一戳">
               <div class="companion-aura"></div>
-              <img class="companion-pet" id="companionPet" src="/pets/dafeiyu/front.png" alt="大肥鱼" width="178" height="238">
+              <img class="companion-pet" id="companionPet" src="/pets/dafeiyu/idle.png" alt="大肥鱼">
               <span class="companion-emote" id="companionEmote" hidden></span>
               <p class="companion-speech" id="companionSpeech">准备好了就开工。</p>
             </div>
             <div class="companion-copy">
-              <small>专注伙伴</small>
-              <b id="companionName">大肥鱼</b>
-              <span id="companionMood">待机</span>
+              <div class="companion-head">
+                <b id="companionName">大肥鱼</b>
+                <div class="companion-tags">
+                  <span id="companionMood">待机</span>
+                  <span id="companionStage" class="companion-band">Lv1 鱼苗</span>
+                </div>
+              </div>
+              <div class="companion-mission">
+                <div class="ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="50"></circle><circle id="progressArc" cx="60" cy="60" r="50"></circle></svg><strong id="pct">0%</strong></div>
+                <div class="hero-copy companion-mission-copy">
+                  <span id="statusPill" hidden>就绪</span>
+                  <h2 id="goal">尚未设置目标</h2>
+                  <p id="focus" hidden>前台：--</p>
+                </div>
+                <div class="hero-stats" id="heroStats" hidden>
+                  <div><small>完成</small><strong id="heroDoneCount">0</strong></div>
+                  <div><small>任务</small><strong id="heroTaskCount">0</strong></div>
+                  <div><small>连续</small><strong id="heroStreak">0</strong></div>
+                </div>
+              </div>
+              <div class="companion-stats" id="companionStats">
+                <div class="companion-stat" title="现在还精神不精神，不是任务积分。">
+                  <span>精力</span>
+                  <div class="companion-bar" aria-hidden="true"><i id="companionEnergyBar"></i></div>
+                  <b id="companionEnergy">70</b>
+                </div>
+                <div class="companion-stat" title="一起做事才会熟。">
+                  <span>默契</span>
+                  <div class="companion-bar companion-bar-bond" aria-hidden="true"><i id="companionBondBar"></i></div>
+                  <b id="companionBond">20</b>
+                </div>
+                <div class="companion-stat" title="做事涨经验，满了升级；阶段随等级进化。">
+                  <span>经验</span>
+                  <div class="companion-bar companion-bar-xp" aria-hidden="true"><i id="companionXpBar"></i></div>
+                  <b id="companionXp">0</b>
+                </div>
+                <div class="companion-stat companion-stat-extra" id="companionHungerRow" hidden title="长期不喂会饿，饿了会掉血。喂食和休息能回。">
+                  <span>饱食</span>
+                  <div class="companion-bar companion-bar-hunger" aria-hidden="true"><i id="companionHungerBar"></i></div>
+                  <b id="companionHunger">70</b>
+                </div>
+                <div class="companion-stat companion-stat-extra" id="companionHpRow" hidden title="失败或挨饿会掉血，不是永久死亡。">
+                  <span>血量</span>
+                  <div class="companion-bar companion-bar-hp" aria-hidden="true"><i id="companionHpBar"></i></div>
+                  <b id="companionHp">100</b>
+                </div>
+              </div>
+              <p id="companionRemain" class="companion-remain">今日还可戳 8 次 / 零食 0/3 / 说句话 6 次</p>
               <p id="companionLine">还没有进行中的任务时，我会在这里等你开始。</p>
               <div class="companion-treats">
                 <button type="button" data-companion="feed" data-treat="小鱼干">小鱼干</button>
                 <button type="button" data-companion="feed" data-treat="蛋糕">蛋糕</button>
                 <button type="button" data-companion="feed" data-treat="棒棒糖">棒棒糖</button>
                 <button type="button" data-companion="talk">说句话</button>
+                <button type="button" data-companion="spend" id="companionSpend">花 10 积分加餐</button>
               </div>
               <div class="companion-actions">
                 <button type="button" class="primary" id="companionPrimary" data-companion="focus">开始专注</button>
-                <button type="button" id="companionSecondary" data-companion="rest">休息一下</button>
+                <button type="button" id="companionSecondary" data-companion="rest" hidden>休息一下</button>
+              </div>
+              <div id="breakWidget" class="break-widget">
+                <input id="quickBreakReason" placeholder="休息原因（可选）">
+                <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
+                <button id="quickStartBreak">开始休息</button>
+                <span id="breakInfo"></span>
               </div>
             </div>
           </section>

@@ -158,6 +158,22 @@ class TestExport:
         assert "tasks" in r or "tasks_by_goal" in r
 
 
+class TestStorageSafety:
+    def test_storage_status_backup_and_complete_export(self):
+        status = _get("/api/storage-status")
+        assert status.get("ok") is True, status
+        backup = _post("/api/storage-backup")
+        assert backup.get("ok") is True and os.path.isfile(backup["path"]), backup
+        export = _post("/api/storage-export")
+        assert export.get("ok") is True and os.path.isfile(export["path"]), export
+
+    def test_restore_requires_explicit_confirmation(self):
+        status = _get("/api/storage-status")
+        path = status["backups"][0]["path"]
+        rejected = _post("/api/storage-restore", {"path": path, "confirm": False})
+        assert rejected.get("_status") == 400
+
+
 class TestErrorHandling:
     """Error path handling."""
 
@@ -199,6 +215,21 @@ class TestReviewedFixes:
         assert state["workspace"] == os.path.abspath(os.getcwd())
         assert state["privacy"]["monitoring_consent"] is True
         assert state["privacy"]["share_foreground_with_ai"] is True
+
+    def test_goal_delete_archives_goal_and_keeps_tasks(self):
+        assert _post("/api/settings", {
+            "goals": ["保留目标", "待删除目标"], "active_goal": 1,
+        }).get("ok")
+        assert _post("/api/tasks", {"tasks": [{"title": "归档后仍保留的任务"}]}).get("ok")
+        before = _get("/api/export")
+        assert before.get("tasks"), before
+        deleted = _post("/api/goal-delete", {"index": 1})
+        assert deleted.get("ok"), deleted
+        assert deleted["archived_goal"]["title"] == "待删除目标"
+        state = _get("/api/state")
+        assert [g["title"] for g in state["goals"]] == ["保留目标"]
+        after = _get("/api/export")
+        assert after.get("tasks_by_goal", {}).get("goal_1"), after
 
     def test_write_endpoint_requires_session(self):
         req = urllib.request.Request(

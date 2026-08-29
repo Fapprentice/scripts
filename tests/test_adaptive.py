@@ -17,6 +17,16 @@ def test_goal_readiness_asks_only_missing_questions():
     assert result["ready"] is False
     assert "最终成果" not in result["missing"]
     assert "希望在哪一天前完成？" in result["questions"]
+    assert result["contract"]["outcome"] == "发布产品"
+    assert result["contract"]["success_criteria"] == ["20 人使用"]
+
+
+def test_goal_contract_normalizes_only_user_commitments():
+    contract = adaptive.goal_contract({"outcome": "  上线  ", "deadline": 20261231,
+                                      "baseline": None, "success_criteria": [" 可访问 ", ""],
+                                      "constraints": "每天 30 分钟", "ignored": "plan"})
+    assert contract == {"outcome": "上线", "deadline": "20261231", "baseline": "",
+                        "success_criteria": ["可访问"], "constraints": ["每天 30 分钟"]}
 
 
 def test_unproven_difficulty_does_not_lower_standard():

@@ -225,10 +225,11 @@ def test_failed_projection_rolls_back_the_whole_state_save(tmp_path):
 def test_schema_metadata_records_bootstrap_version_and_migration_history(tmp_path):
     store = SqliteStore(tmp_path, auto_backup=False)
 
-    assert store.schema_version() == 1
-    assert store.migration_history() == [{
-        "from_version": 0, "to_version": 1, "name": "initial_schema",
-    }]
+    assert store.schema_version() == 2
+    assert store.migration_history() == [
+        {"from_version": 0, "to_version": 1, "name": "initial_schema"},
+        {"from_version": 1, "to_version": 2, "name": "companion_growth"},
+    ]
 
 
 def test_upgrade_creates_pre_migration_backup_before_recording_upgrade(tmp_path):
@@ -239,10 +240,11 @@ def test_upgrade_creates_pre_migration_backup_before_recording_upgrade(tmp_path)
 
     upgraded = SqliteStore(tmp_path, auto_backup=False)
 
-    assert upgraded.schema_version() == 1
-    assert upgraded.migration_history() == [{
-        "from_version": 0, "to_version": 1, "name": "initial_schema",
-    }]
+    assert upgraded.schema_version() == 2
+    assert upgraded.migration_history() == [
+        {"from_version": 0, "to_version": 1, "name": "initial_schema"},
+        {"from_version": 1, "to_version": 2, "name": "companion_growth"},
+    ]
     assert len(list((tmp_path / "backups" / "pre-migration").glob("*.db"))) == 1
 
 
@@ -256,8 +258,8 @@ def test_health_report_exposes_schema_and_attachment_integrity(tmp_path):
     report = store.health_report()
 
     assert report["ok"] is False
-    assert report["schema_version"] == 1
-    assert report["target_schema_version"] == 1
+    assert report["schema_version"] == 2
+    assert report["target_schema_version"] == 2
     assert report["attachments"] == [{"sha256": store._hash(source), "problem": "missing"}]
 
 
@@ -298,3 +300,147 @@ def test_health_report_returns_failure_details_for_unreadable_database(tmp_path)
     assert report["ok"] is False
     assert report["database"] == "corrupt"
     assert "database cannot be read" in report["issues"][0]
+
+
+def test_v1_upgrade_creates_pre_migration_backup_and_default_companion(tmp_path):
+    store = SqliteStore(tmp_path, auto_backup=False)
+    store.save(
+        str(tmp_path / "task-config.json"),
+        {
+            "goal": "英语四级",
+            "goals": [{"id": "g1", "title": "英语四级", "success_criteria": ["成绩>=425"]}],
+            "tasks_by_goal": {"g1": [{"id": "t1", "title": "词汇诊断", "acceptance": "正确率>=70%"}]},
+        },
+        backup=False,
+    )
+    with sqlite3.connect(tmp_path / "taskverge.db") as database:
+        database.execute("PRAGMA user_version=1")
+        database.execute("DELETE FROM schema_migrations WHERE to_version>=2")
+        database.execute("DROP TABLE IF EXISTS companion_events")
+        database.execute("DROP TABLE IF EXISTS companions")
+        database.commit()
+        tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "companions" not in tables
+        task_count = database.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        goal_count = database.execute("SELECT COUNT(*) FROM goals").fetchone()[0]
+
+    upgraded = SqliteStore(tmp_path, auto_backup=False)
+    companion = upgraded.load_companion()
+    state = upgraded.load(str(tmp_path / "task-config.json"))
+
+    assert upgraded.schema_version() == 2
+    assert any(item["name"] == "companion_growth" for item in upgraded.migration_history())
+    assert companion["id"] == "dafeiyu"
+    assert companion["name"] == "大肥鱼"
+    assert companion["energy"] == 70 and companion["bond"] == 20
+    assert companion["poke_used"] == 0 and companion["feed_used"] == 0 and companion["talk_used"] == 0
+    assert state["goal"] == "英语四级"
+    assert state["goals"][0]["id"] == "g1"
+    assert state["tasks_by_goal"]["g1"][0]["id"] == "t1"
+    with sqlite3.connect(tmp_path / "taskverge.db") as database:
+        assert database.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == task_count == 1
+        assert database.execute("SELECT COUNT(*) FROM goals").fetchone()[0] == goal_count == 1
+        assert database.execute("SELECT COUNT(*) FROM companions").fetchone()[0] == 1
+        assert database.execute("SELECT COUNT(*) FROM companion_events").fetchone()[0] == 0
+    assert len(list((tmp_path / "backups" / "pre-migration").glob("*.db"))) >= 1
+
+
+def test_companion_survives_projection_and_is_json_snapshot_only(tmp_path):
+    store = SqliteStore(tmp_path, auto_backup=False)
+    store.write_companion({"energy": 76, "bond": 23, "day": "2026-04-08"}, {
+        "id": "evt1", "ts": "2026-04-08T10:00:00", "kind": "poke",
+        "delta_energy": 0, "delta_bond": 1, "reason": "戳了一下，默契 +1",
+        "dedupe_key": "poke-test",
+    })
+    store.save(str(tmp_path / "task-config.json"), {"goal": "仍在", "goals": [{"id": "g1", "title": "仍在"}]}, backup=False)
+
+    companion = store.load_companion()
+    events = store.list_companion_events()
+    snapshot = store.load(str(tmp_path / "companion.json"), {})
+    assert companion["energy"] == 76 and companion["bond"] == 23
+    assert events[0]["kind"] == "poke"
+    assert snapshot["companion"]["energy"] == 76
+    store.write_companion({"energy": 80, "bond": 24, "day": "2026-04-08"})
+    assert store.load_companion()["energy"] == 80
+    snapshot_after = store.load(str(tmp_path / "companion.json"), {})
+    assert snapshot_after["companion"]["energy"] == 80
+    assert snapshot_after["companion"]["bond"] == 24
+
+
+def test_companion_survives_restore_backup_and_complete_import(tmp_path):
+    store = SqliteStore(tmp_path, auto_backup=False)
+    state_path = tmp_path / "task-config.json"
+    store.save(str(state_path), {"goal": "可恢复陪伴", "goals": [{"id": "g1", "title": "可恢复陪伴"}]}, backup=False)
+    store.write_companion({"energy": 76, "bond": 23, "day": "2026-04-08", "poke_used": 2}, {
+        "id": "evt-poke", "ts": "2026-04-08T10:00:00", "kind": "poke",
+        "delta_energy": 0, "delta_bond": 1, "reason": "戳了一下，默契 +1",
+        "dedupe_key": "poke-restore",
+    })
+    backup = store.create_backup("manual")
+    package = store.export_complete(tmp_path / "exports" / "with-companion.tvbackup")
+
+    store.write_companion({"energy": 11, "bond": 5, "day": "2026-04-09"})
+    store.save(str(state_path), {"goal": "错误修改"}, backup=False)
+    assert store.load_companion()["energy"] == 11
+
+    store.restore_backup(backup)
+    restored = store.load_companion()
+    assert restored["energy"] == 76
+    assert restored["bond"] == 23
+    assert restored["poke_used"] == 2
+    events = store.list_companion_events()
+    assert [item["id"] for item in events] == ["evt-poke"]
+    assert events[0]["delta_bond"] == 1
+    assert store.load(str(state_path))["goal"] == "可恢复陪伴"
+
+    store.write_companion({"energy": 3, "bond": 1, "day": "2026-04-10"})
+    store.save(str(state_path), {"goal": "导入前损坏"}, backup=False)
+    store.import_complete(package)
+    imported = store.load_companion()
+    assert imported["energy"] == 76
+    assert imported["bond"] == 23
+    imported_events = store.list_companion_events()
+    assert [item["kind"] for item in imported_events] == ["poke"]
+    assert store.find_companion_event("poke-restore")["id"] == "evt-poke"
+    assert store.load(str(state_path))["goal"] == "可恢复陪伴"
+
+
+def test_complete_import_carries_companion_to_a_different_data_directory(tmp_path):
+    source = SqliteStore(tmp_path / "source", auto_backup=False)
+    source.write_companion({"energy": 88, "bond": 41, "day": "2026-04-08"}, {
+        "id": "evt-feed", "ts": "2026-04-08T11:00:00", "kind": "feed", "treat": "小鱼干",
+        "delta_energy": 8, "delta_bond": 2, "reason": "喂了小鱼干，精力 +8，默契 +2",
+        "dedupe_key": "feed-portable",
+    })
+    source.save(str(tmp_path / "source" / "task-config.json"), {"goal": "便携陪伴"}, backup=False)
+    package = source.export_complete(tmp_path / "portable-companion.tvbackup")
+
+    target = SqliteStore(tmp_path / "target", auto_backup=False)
+    assert target.load_companion()["energy"] == 70
+    target.import_complete(package)
+    companion = target.load_companion()
+    assert companion["energy"] == 88
+    assert companion["bond"] == 41
+    events = target.list_companion_events()
+    assert len(events) == 1
+    assert events[0]["kind"] == "feed"
+    assert events[0]["treat"] == "小鱼干"
+    assert target.load(str(tmp_path / "target" / "task-config.json"))["goal"] == "便携陪伴"
+
+
+def test_companion_event_dedupe_key_is_unique(tmp_path):
+    store = SqliteStore(tmp_path, auto_backup=False)
+    event = {
+        "id": "evt-once", "ts": "2026-04-08T10:00:00", "kind": "accepted",
+        "delta_energy": 6, "delta_bond": 8, "reason": "验收通过，精力 +6，默契 +8",
+        "dedupe_key": "accepted:run-1",
+    }
+    store.write_companion({"energy": 76, "bond": 28, "day": "2026-04-08"}, event)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.write_companion({"energy": 82, "bond": 36, "day": "2026-04-08"}, {
+            **event, "id": "evt-twice",
+        })
+    companion = store.load_companion()
+    assert companion["energy"] == 76
+    assert companion["bond"] == 28
+    assert len(store.list_companion_events()) == 1

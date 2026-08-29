@@ -4,9 +4,10 @@ from acceptance import build_remediation_task, explainable_result
 
 
 class AcceptanceService:
-    def __init__(self, *, normalize, text, sync_pct, save, event, outcome=None, learning_outcome=None):
+    def __init__(self, *, normalize, text, sync_pct, save, event, outcome=None, learning_outcome=None, companion=None):
         self.normalize, self.text = normalize, text
         self.sync_pct, self.save, self.event, self.outcome, self.learning_outcome = sync_pct, save, event, outcome, learning_outcome
+        self.companion = companion
 
     def persist_result(self, state, idx, result):
         tasks = self.normalize(state.get("tasks", []), state.get("active_goal_id", ""), state.get("done_flags", []))
@@ -25,6 +26,8 @@ class AcceptanceService:
         elif result["status"] == "failed" and self.outcome: self.outcome(state, "failed")
         if result["status"] in ("passed", "failed") and self.learning_outcome:
             self.learning_outcome(state, state["tasks"][idx], passed)
+        if self.companion and result["status"] != "needs_review":
+            self.companion(state, idx, result)
         self.sync_pct(state); self.save(state)
         self.event(state, "task_acceptance", result["status"], {"idx": idx, "status": result["status"]})
         return True, result

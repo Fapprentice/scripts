@@ -22,6 +22,7 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 | `runtime.py` | 作业队列与有界 HTTP 线程池 |
 | `acceptance.py` | 确定性验收规则、材料型任务答案判定、补救任务构造 |
 | `acceptance_service.py` | 验收结果持久化、补救任务插入与去重 |
+| `companion_service.py` | 全局大肥鱼养成：日上限、冷却、沉降、可解释事件；与任务状态同事务写入 |
 | `adaptive.py` | 目标完整度、能力诊断、自适应任务生成和反馈决策 |
 | `learning.py` | FSRS 调度、知识点状态、诊断任务与执行材料生成 |
 | `task_service.py` | 任务增删改、状态和证据操作 |
@@ -43,7 +44,7 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 | `web/views.js` | 弹窗和 Toast 的唯一实现 |
 | `web/api.js` | 会话领取、请求、上传和心跳的唯一实现 |
 | `web/app.js` | 页面状态、任务流和陪伴展示；通过别名调用上述模块 |
-| `web/pets/dafeiyu/` | 陪伴立绘；纯展示，不持久化精力或默契 |
+| `web/pets/dafeiyu/` | 陪伴立绘；精力与默契由 SQLite 养成表持久化，短时演出仍只在前端内存 |
 
 三个一级视图：
 
@@ -91,6 +92,7 @@ Task Verge 是 Windows 本地桌面应用：Python 后端在 `127.0.0.1` 提供�
 ## 6. 主要 API 分组
 
 - 状态与目标：`/api/state`、`/api/settings`、`/api/active-goal`
+- 陪伴：`/api/companion`、`/api/companion-event`；`/api/state.companion` 快照会在同一把存储锁内完成沉降；验收/专注/休息与养成同一次 `sc()` 事务
 - 任务：`/api/tasks`、`/api/task`、`/api/task-state`、`/api/task-adjust`
 - 材料与证据：`/api/task-response`、`/api/upload-evidence`、`/api/task-evidence-list`
 - 生成与验收：`/api/generate`、`/api/generate-status`、`/api/evaluate-task`、`/api/evaluate`

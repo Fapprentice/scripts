@@ -346,23 +346,37 @@ function formatRemain(sec){
   const m = Math.floor(sec/60), s = sec%60;
   return m + ':' + String(s).padStart(2,'0');
 }
+function localDay(value){
+  if(!value) return '';
+  const text=String(value);
+  if(/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0,10);
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime())) return text.slice(0,10);
+  const y=date.getFullYear(), m=String(date.getMonth()+1).padStart(2,'0'), d=String(date.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+d;
+}
+function todayBreaks(){
+  const todayStr = localDay(new Date());
+  return (state.breaks || []).filter(b => localDay(b.date||b.ts) === todayStr);
+}
 function setBreakWidgetState(active){
   const btn = $('#quickStartBreak');
   const reason = $('#quickBreakReason');
   const mins = $('#quickBreakMinutes');
+  const used = todayBreaks().length;
   if(reason) reason.style.display = active ? 'none' : '';
   if(mins) mins.style.display = active ? 'none' : '';
   if(btn){
     btn.textContent = active ? '结束休息' : '开始休息';
     btn.classList.toggle('break-end', !!active);
+    btn.disabled = !active && used >= 3;
+    btn.title = (!active && used >= 3) ? '今天休息次数已用完' : '';
   }
 }
 function renderBreakWidget(){
   const info = $('#breakInfo');
   if(!info) return;
-  const breaks = state.breaks || [];
-  const todayStr = new Date().toISOString().slice(0,10);
-  const todays = breaks.filter(b => (b.date||'').slice(0,10) === todayStr);
+  const todays = todayBreaks();
   const activeTask=(state.tasks||[]).find(t=>!t.done && t.status==='doing');
   if(activeTask){
     $('#statusPill').textContent='专注中';
@@ -378,8 +392,8 @@ function renderBreakWidget(){
       return;
     }
   }
-  info.textContent = `今日 ${todays.length}/3 次`;
-  info.style.color = 'var(--muted)';
+  info.textContent = todays.length>=3 ? '今日 3/3 次，休息额度已用完' : `今日 ${todays.length}/3 次`;
+  info.style.color = todays.length>=3 ? 'var(--warn)' : 'var(--muted)';
   setBreakWidgetState(false);
 }
 // 1s countdown ticker — updates remaining time while a break is running
@@ -391,8 +405,7 @@ function updateBreakCountdown(){
     const active = activeBreak();
     if(active){
       _breakWasActive = true;
-      const todayStr = new Date().toISOString().slice(0,10);
-      const todays = (state.breaks||[]).filter(b => (b.date||'').slice(0,10) === todayStr).length;
+      const todays = todayBreaks().length;
       info.textContent = `休息中，剩 ${formatRemain(active.until - Date.now()/1000)}（今日 ${todays}/3 次）`;
       info.style.color = 'var(--warn)';
       return;
@@ -536,56 +549,66 @@ const COMPANION_LINES = {
   wait: ['下一件在等你。','别让待办自己长脚跑掉。','开始了我就盯着你。'],
   focus: ['我守着，你继续。','别看我，看任务。','提交之前先检查交付物。'],
   rest: ['先缓一缓。','休息不是逃，是换口气。','好了就回来，我还在。'],
-  happy: ['这下对上了。','过了！再来一件也行。','连续的感觉不错。'],
-  cheer: ['先做最小一步。','没过也别散，拆小一点。','证据不够就补证据。'],
+  happy: ['这下对上了。','过了！再来一件也行。','证据齐了才许开心。'],
+  cheer: ['先做最小一步。','没过也别散，拆小一点。','证据不够就补证据。养成没扣你的。'],
   poke: ['干嘛戳我。','再戳我把任务藏起来。','戳完了就去干活。','哼。'],
   feed: {
     '小鱼干': ['才不是大肥鱼……多谢。','这条可以。','吃完继续盯你。'],
     '蛋糕': ['甜的也行。','别以为喂我就放过验收。','嗯，心情好一点了。'],
     '棒棒糖': ['嘎嘣脆。','糖可以，任务不行就重来。','下次带小鱼干。']
   },
-  talk: ['才不是大肥鱼。','先把成功标准写清楚。','没有证据的通过，我不认。','D指导说先吃饭？那你先做完这件。','思维链：用户是不是又想摸鱼。']
+  talk: ['才不是大肥鱼。','先把成功标准写清楚。','没有证据的通过，我不认。','D指导说先吃饭？那你先做完这件。','思维链：用户是不是又想摸鱼。'],
+  spend: ['这顿积分加餐可以。','花积分可以，标准不能降。','吃完继续盯你。'],
+  sleepy: ['有点困，不是生气。','先缓一下。'],
+  hungry: ['肚子空了会掉血。','喂一口或休息一下。'],
+  fainted: ['不是死透，喂一口就能爬起来。','先吃饭，再干活。'],
+  celebrate: ['过了就过了，别让我再核一次。','证据齐了才许开心。','默契涨一点。标准还是那些。']
 };
-let companionPlay = {until:0, mood:'', speech:'', emote:'', anim:''};
+let companionPlay = {until:0, mood:'', speech:'', emote:'', anim:'', treat:''};
 function pickLine(list){ const items=list||[]; return items[Math.floor(Math.random()*Math.max(items.length,1))]||''; }
-function playCompanion(mood, speech, emote, anim, ms){
-  companionPlay={until:Date.now()+(ms||1600), mood, speech, emote:emote||'', anim:anim||mood};
+function playCompanion(mood, speech, emote, anim, ms, treat){
+  companionPlay={until:Date.now()+(ms||1600), mood, speech, emote:emote||'', anim:anim||mood, treat:treat||''};
   renderCompanion();
   setTimeout(()=>{ if(Date.now()>=companionPlay.until-20) renderCompanion(); }, (ms||1600)+30);
 }
+function playHint(hint){
+  if(!hint) return;
+  const kind=hint.kind||'idle';
+  const treat=hint.treat||'';
+  const speech=kind==='feed' ? pickLine((COMPANION_LINES.feed[treat]||COMPANION_LINES.feed['小鱼干']))
+    : pickLine(COMPANION_LINES[kind]||COMPANION_LINES.idle);
+  playCompanion(kind, speech, hint.emote||'', kind==='happy'?'happy':kind, hint.ms||1600, treat);
+}
+function companionGrowth(){
+  return state?.companion || {};
+}
 function companionSnapshot(){
+  const growth=companionGrowth();
   const tasks=state.tasks||[];
   const doing=tasks.find(t=>!t.done && t.status==='doing');
   const next=tasks.find(t=>!t.done && t.status!=='skipped');
   const last=(state.motivation?.history||[]).slice(-1)[0]||{};
-  const streak=Number(state.motivation?.streak)||0;
-  let mood='idle', moodLabel='待机', speech=pickLine(COMPANION_LINES.idle), line='还没有进行中的任务时，我会在这里等你开始。';
+  let mood=growth.mood||'idle';
+  let moodLabel=growth.mood_label||'待机';
+  let speech=pickLine(COMPANION_LINES[mood==='idle'&&next?'wait':mood]||COMPANION_LINES.idle);
+  let line=growth.line||'还没有进行中的任务时，我会在这里等你开始。';
   let primary={action:'focus', label:'开始专注', hidden:false};
-  let secondary={action:'rest', label:'休息一下', hidden:false};
+  let secondary={action:'rest', label:'休息一下', hidden:true};
   if(doing){
-    mood='focus'; moodLabel='专注中'; speech=pickLine(COMPANION_LINES.focus);
-    line='正在做：'+(doing.text||doing.title||'当前任务')+'。提交可检查结果后我会变高兴。';
     primary={action:'submit', label:'提交验收', hidden:false};
     secondary={action:'pause', label:'暂停一下', hidden:false};
   }else if(state.break_active){
-    mood='rest'; moodLabel='休息中'; speech=pickLine(COMPANION_LINES.rest);
-    line='休息结束后再从最小可执行步骤接着做。';
     primary={action:'end-rest', label:'结束休息', hidden:false};
     secondary={action:'focus', label:'开始专注', hidden:true};
+  }else if(growth.can_celebrate){
+    primary={action:'celebrate', label:'庆祝一下', hidden:false};
   }else if(last.outcome==='accepted'){
-    mood='happy'; moodLabel='开心'; speech=pickLine(COMPANION_LINES.happy);
-    line='连续完成 '+streak+' 次。下一件也按同样标准验收。';
     primary={action:'focus', label: next ? '开始下一件' : '生成任务', hidden:false};
   }else if(last.outcome==='failed' || last.outcome==='skipped'){
-    mood='cheer'; moodLabel='打气'; speech=pickLine(COMPANION_LINES.cheer);
-    line='验收没过也没关系，从一个可验证的小动作重新开始。';
     primary={action:'recover', label:'开始补救', hidden:false};
   }else if(next){
-    mood='idle'; moodLabel='待命'; speech=pickLine(COMPANION_LINES.wait);
-    line='待开始：'+(next.text||next.title||'今日任务')+'。';
+    primary={action:'focus', label:'开始专注', hidden:false};
   }else if(!(state.goal && String(state.goal).trim())){
-    mood='idle'; moodLabel='待机'; speech='先把目标写清楚。';
-    line='去设置页补全最终成果和成功标准，我才能跟着验收。';
     primary={action:'goal', label:'去补全目标', hidden:false};
     secondary={action:'rest', label:'休息一下', hidden:true};
   }
@@ -596,10 +619,62 @@ function companionSnapshot(){
     if(mood==='poke') moodLabel='被戳';
     if(mood==='feed') moodLabel='进食';
     if(mood==='talk') moodLabel='碎碎念';
+    if(mood==='spend') moodLabel='加餐';
+    if(mood==='happy') moodLabel='开心';
+    if(mood==='cheer') moodLabel='打气';
   }
-  return {mood, moodLabel, speech, line, primary, secondary, playing, emote: playing ? companionPlay.emote : '', anim: playing ? companionPlay.anim : ''};
+  const today=growth.today||{};
+  const pokeLeft=Math.max(0, (today.poke_limit||8)-(today.poke_used||0));
+  const talkLeft=Math.max(0, (today.talk_limit||6)-(today.talk_used||0));
+  const remain='戳 '+pokeLeft+' · 零食 '+(today.feed_used||0)+'/'+(today.feed_limit||3)+' · 说话 '+talkLeft;
+  return {
+    mood, moodLabel, speech, line, primary, secondary, playing,
+    emote: playing ? companionPlay.emote : '',
+    anim: playing ? companionPlay.anim : '',
+    energy: Number(growth.energy ?? 70),
+    bond: Number(growth.bond ?? 20),
+    energyMax: Number(growth.energy_max ?? 100),
+    bondMax: Number(growth.bond_max ?? 100),
+    hp: Number(growth.hp ?? 100),
+    hpMax: Number(growth.hp_max ?? 100),
+    hunger: Number(growth.hunger ?? 70),
+    hungerMax: Number(growth.hunger_max ?? 100),
+    xp: Number(growth.xp ?? 0),
+    xpToNext: Number(growth.xp_to_next ?? 40),
+    level: Number(growth.level ?? 1),
+    stage: growth.stage||'鱼苗',
+    fainted: !!growth.fainted,
+    spendCost: Number(growth.spend_cost ?? 10),
+    points: Number(growth.points ?? (state.motivation&&state.motivation.points) ?? 0),
+    bondBand: growth.bond_band||'慢慢熟',
+    remain
+  };
 }
 
+function companionSprite(snap){
+  if(snap.fainted && !snap.playing) return '/pets/dafeiyu/fainted.png';
+  const treat=companionPlay.treat || '';
+  const byMood={
+    idle:'/pets/dafeiyu/idle.png',
+    wait:'/pets/dafeiyu/idle.png',
+    focus:'/pets/dafeiyu/focus.png',
+    rest:'/pets/dafeiyu/rest.png',
+    sleepy:'/pets/dafeiyu/sleepy.png',
+    hungry:'/pets/dafeiyu/hungry.png',
+    happy:'/pets/dafeiyu/happy.png',
+    cheer:'/pets/dafeiyu/cheer.png',
+    poke:'/pets/dafeiyu/poke.png',
+    talk:'/pets/dafeiyu/talk.png',
+    spend:'/pets/dafeiyu/spend.png',
+    celebrate:'/pets/dafeiyu/happy.png'
+  };
+  if(snap.mood==='feed'){
+    if(treat==='蛋糕') return '/pets/dafeiyu/feed-cake.png';
+    if(treat==='棒棒糖') return '/pets/dafeiyu/feed-candy.png';
+    return '/pets/dafeiyu/feed-fish.png';
+  }
+  return byMood[snap.mood] || '/pets/dafeiyu/idle.png';
+}
 function renderCompanion(){
   const host=$('#companion');
   if(!host || !state) return;
@@ -608,19 +683,49 @@ function renderCompanion(){
   host.dataset.anim=snap.anim||'';
   const pose=$('#companionPet');
   if(pose){
-    const src={focus:'/pets/dafeiyu/side.png', rest:'/pets/dafeiyu/back.png', poke:'/pets/dafeiyu/side.png', feed:'/pets/dafeiyu/front.png', talk:'/pets/dafeiyu/front.png', happy:'/pets/dafeiyu/front.png', cheer:'/pets/dafeiyu/front.png', idle:'/pets/dafeiyu/front.png'}[snap.mood]||'/pets/dafeiyu/front.png';
+    const src=companionSprite(snap);
     if(!String(pose.getAttribute('src')||'').endsWith(src.split('/').pop())) pose.src=src;
   }
   const set=(id,text)=>{ const el=$(id); if(el) el.textContent=text; };
   set('#companionMood', snap.moodLabel);
   set('#companionSpeech', snap.speech);
   if(!snap.playing) set('#companionLine', snap.line);
+  set('#companionStage', 'Lv'+snap.level+' '+snap.stage);
+  set('#companionEnergy', String(snap.energy));
+  set('#companionBond', String(snap.bond));
+  set('#companionXp', snap.xp+'/'+snap.xpToNext);
+  set('#companionHunger', String(snap.hunger));
+  set('#companionHp', String(snap.hp));
+  set('#companionRemain', snap.remain);
+  const fill=(id, value, max)=>{ const el=$(id); if(el) el.style.width=Math.max(0, Math.min(100, Number(value)/Math.max(1,Number(max))*100))+'%'; };
+  fill('#companionEnergyBar', snap.energy, snap.energyMax);
+  fill('#companionBondBar', snap.bond, snap.bondMax);
+  fill('#companionXpBar', snap.xp, snap.xpToNext);
+  fill('#companionHungerBar', snap.hunger, snap.hungerMax);
+  fill('#companionHpBar', snap.hp, snap.hpMax);
+  const hungerRow=$('#companionHungerRow');
+  if(hungerRow) hungerRow.hidden = Number(snap.hunger) > 40 && !snap.fainted;
+  const hpRow=$('#companionHpRow');
+  if(hpRow) hpRow.hidden = Number(snap.hp) >= 80 && !snap.fainted;
+  const spend=$('#companionSpend');
+  if(spend){ spend.textContent='花 '+snap.spendCost+' 积分加餐'; spend.disabled=snap.points<snap.spendCost; spend.title=snap.points<snap.spendCost?'积分不够，先把一件事做对':'主动花积分喂一口，不是失败自动扣精力'; }
+  host.classList.toggle('is-fainted', !!snap.fainted);
   const emote=$('#companionEmote');
   if(emote){ emote.textContent=snap.emote||''; emote.hidden=!snap.emote; }
   const primary=$('#companionPrimary');
   if(primary){ primary.dataset.companion=snap.primary.action; primary.textContent=snap.primary.label; primary.hidden=!!snap.primary.hidden; }
   const secondary=$('#companionSecondary');
   if(secondary){ secondary.dataset.companion=snap.secondary.action; secondary.textContent=snap.secondary.label; secondary.hidden=!!snap.secondary.hidden; }
+}
+
+async function persistCompanion(kind, extra){
+  const payload=Object.assign({kind}, extra||{});
+  const result=await api('companion-event', payload);
+  if(result.snapshot) state.companion=result.snapshot;
+  if(result.reason && result.applied===false) toast(result.reason);
+  playHint(result.play_hint);
+  renderCompanion();
+  return result;
 }
 
 async function runCompanion(action, treat){
@@ -655,18 +760,30 @@ async function runCompanion(action, treat){
     catch(err){ toast('当前没有需要补救的任务',false); }
     return;
   }
+  if(action==='celebrate'){
+    try{ await persistCompanion('celebrate', {acceptance_id: companionGrowth().last_accepted_id||''}); }
+    catch(err){ toast(err.message||'过了再庆祝。没有证据的开心，我不认。', false); }
+    return;
+  }
   if(action==='poke'){
-    playCompanion('poke', pickLine(COMPANION_LINES.poke), '💢', 'poke', 1200);
+    try{ await persistCompanion('poke'); }
+    catch(err){ toast(err.message||'戳失败了', false); }
     return;
   }
   if(action==='talk'){
-    playCompanion('talk', pickLine(COMPANION_LINES.talk), '💬', 'talk', 2200);
+    try{ await persistCompanion('talk'); }
+    catch(err){ toast(err.message||'说话失败了', false); }
     return;
   }
   if(action==='feed'){
     const snack=treat||'小鱼干';
-    const lines=COMPANION_LINES.feed[snack]||COMPANION_LINES.feed['小鱼干'];
-    playCompanion('feed', pickLine(lines), snack==='蛋糕'?'🍰':snack==='棒棒糖'?'🍭':'🐟', 'feed', 1800);
+    try{ await persistCompanion('feed', {treat:snack}); }
+    catch(err){ toast(err.message||'喂食失败了', false); }
+    return;
+  }
+  if(action==='spend'){
+    try{ const result=await persistCompanion('spend'); if(result.snapshot) state.companion=result.snapshot; await load(); }
+    catch(err){ toast(err.message||'积分不够 10 点，先把一件事做对。', false); }
   }
 }
 
@@ -727,7 +844,7 @@ function renderCurrentTaskBar(){
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
   const evidenceBox=materials?'':`<h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label>`;
   bar.className='current-task-bar mission-task';
-  bar.innerHTML=`<div class="mission-head"><b>当前任务</b></div><article class="mission-card">
+  bar.innerHTML=`<article class="mission-card">
     <div class="mission-status"><span><i></i>${taskStatusLabel}${task.status==='doing'&&task.started_at?`　<small>开始于 ${new Date(task.started_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</small>`:''}</span><button data-goto-queue>查看历史任务</button></div>
     <div class="mission-title"><h2>${escapeHtml(title)}</h2><div><small>已用时</small><strong id="focusElapsed" data-started="${task.status==='doing'?escapeHtml(task.started_at||''):''}" data-actual="${Number(task.actual_seconds)||0}">${timerText}</strong><span>◷　预计 ${Number(task.estimated_minutes)||45}:00</span></div></div>
     <div class="mission-meta">${taskMeta.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div>
@@ -767,7 +884,7 @@ function renderSessionControls(){
 function syncFocusStatusPill(){
   if(!focusStatusPill) focusStatusPill=$('#statusPill');
   if(!focusStatusPill) return;
-  const target=$('.hero-copy');
+  const target=$('.companion-mission-copy') || $('.hero-copy');
   if(target && focusStatusPill.parentElement!==target) target.prepend(focusStatusPill);
 }
 function renderRecoveryAction(){
@@ -1472,13 +1589,18 @@ document.addEventListener('click', async e=>{
       if(!response || (typeof response==='object'&&!Object.keys(response).length)){ showModal('不能验收','请先完成页面中的题目或作答。','warn'); return; }
       await api('task-response',{idx,response});
       const r=await api('evaluate-task',{idx}); await load();
-      const detail=r.result||{}; showModal(r.pass?'验收通过':'需要补交',detail.reason||'验收完成',r.pass?'success':'warn'); return;
+      const detail=r.result||{};
+      if(r.status==='needs_review'){ toast('这次还要复核，大肥鱼先不庆祝。'); showModal('需要复核', detail.reason||'这次还要复核，大肥鱼先不庆祝。', 'warn'); return; }
+      playHint(r.companion && r.companion.play_hint);
+      showModal(r.pass?'验收通过':'需要补交',detail.reason||'验收完成',r.pass?'success':'warn'); return;
     }
     let evidence=t.evidence || await askEvidence();
     if(!evidence){ e.target.checked=!!t.done; showModal('不能验收', '未提交交付物或证据。请先上传交付物，或填写文件路径/链接/完成说明。', 'warn'); return; }
     await api('task-evidence',{idx,evidence});
     const r=await api('evaluate-task',{idx}); await load();
     const detail=r.result||{};
+    if(r.status==='needs_review'){ toast('这次还要复核，大肥鱼先不庆祝。'); showModal('需要复核', detail.reason||'这次还要复核，大肥鱼先不庆祝。', 'warn'); return; }
+    playHint(r.companion && r.companion.play_hint);
     const followUp=(detail.next_steps||[])[0], missing=(detail.missing||[]).join('；');
     showModal(r.pass?'验收通过':'需要补交',[detail.reason,missing&&`缺少：${missing}`,followUp&&`下一步：${followUp}`].filter(Boolean).join('\n')||'验收完成',r.pass?'success':'warn'); return;
   }
@@ -1563,11 +1685,12 @@ document.addEventListener('click', async e=>{
           return;
         }
       }else{
-        await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value});
+        if(todayBreaks().length>=3){ toast('今天休息次数已用完', false); return; }
+        await api('break',{reason:$('#quickBreakReason').value,minutes:+$('#quickBreakMinutes').value,source:'user'});
         toast('已开始休息');
       }
       await load();
-    }catch(_){}
+    }catch(err){ toast(err.message||'现在不能休息', false); }
     return;
   }
   if(e.target.id==='quitApp'){

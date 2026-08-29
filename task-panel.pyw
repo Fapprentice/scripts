@@ -27,6 +27,7 @@ from task_service import TaskService
 from agent_service import AgentService
 from feedback_service import FeedbackService
 from acceptance_service import AcceptanceService
+from companion_service import CompanionService
 _AUTH_EXEMPT_GET = {"/api/claim", "/api/heartbeat", "/favicon.ico", "/api/generate-status"}
 _AUTH_EXEMPT_POST = set()
 JOBS = JobRunner()
@@ -34,6 +35,7 @@ TASKS = None
 AGENTS = None
 FEEDBACK = None
 ACCEPTANCE = None
+COMPANION = None
 
 
 # ---- initial crash log ----
@@ -130,8 +132,11 @@ STORE = open_store(APP_DIR, P["log"], _confirm_storage_recovery)
 _DURABLE_DOCUMENTS = {"task-config.json", "history.json", "fgtime.json"}
 def jl(path, default=None):
     return (STORE if os.path.basename(path).lower() in _DURABLE_DOCUMENTS else LEGACY_STORE).load(path, default)
-def js(path, data):
-    return (STORE if os.path.basename(path).lower() in _DURABLE_DOCUMENTS else LEGACY_STORE).save(path, data)
+def js(path, data, companion_mutator=None):
+    store = STORE if os.path.basename(path).lower() in _DURABLE_DOCUMENTS else LEGACY_STORE
+    if companion_mutator is not None and store is STORE:
+        return store.save(path, data, companion_mutator=companion_mutator)
+    return store.save(path, data)
 
 # Import all legacy documents before rewriting evidence paths. The source JSON
 # and uploads remain untouched as a read-only migration safety net.
@@ -191,11 +196,13 @@ def sc(c):
     with _CFG_LOCK:
         c["state_revision"] = int(c.get("state_revision",0) or 0) + 1
         compact_state(c); cleanup_uploads(c)
-        js(P["cfg"], c)
+        mutator = COMPANION.pending_mutator() if COMPANION else None
+        js(P["cfg"], c, companion_mutator=mutator)
+        if COMPANION: COMPANION.clear_pending()
 
 # ---- Compatibility/state helpers retained during the module split ----
-# These helpers are deliberately small: JSON remains the source of truth and
-# callers decide when to persist through sc().
+# These helpers are deliberately small: SQLite is the source of truth and
+# callers decide when to persist through sc(). JSON documents are compatibility snapshots.
 def norm_goals(c):
     goals = c.get("goals") if isinstance(c.get("goals"), list) else []
     clean = []
@@ -857,7 +864,11 @@ def evaluate_task(task_idx):
     ok, persisted = ACCEPTANCE.persist_result(c, task_idx, result)
     if not ok: raise ValueError(persisted)
     if persisted.get("status")=="passed": record_product_event(c, "first_task_accepted")
-    return {"ok":True,"pass":persisted.get("status")=="passed","status":persisted.get("status"),"result":persisted}
+    sc(c)
+    payload={"ok":True,"pass":persisted.get("status")=="passed","status":persisted.get("status"),"result":persisted}
+    if COMPANION and COMPANION.last_apply:
+        payload["companion"]=COMPANION.last_apply
+    return payload
 
 def cli_eval():
     c = ensure_goal_state(lc())
@@ -1233,7 +1244,8 @@ class WebApp:
             "focus_profile":focus_profile(c),
             "break_active":break_active(c),"breaks":c.get("breaks",[])[-20:],"events":c.get("events",[])[-80:],
             "quit_attempts":c.get("quit_attempts",[])[-50:],"archives":c.get("archives",[])[-30:],
-             "last_crash":crash_last(),"undo_available":bool(_UNDO)}
+             "last_crash":crash_last(),"undo_available":bool(_UNDO),
+            "companion": COMPANION.snapshot(c) if COMPANION else None}
 
 WEBAPP = None
 GEN_STATUS={"running":False,"step":"空闲","message":"","ts":0}
@@ -1873,6 +1885,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._validate_host_origin(): return
         if not self._check_auth(_AUTH_EXEMPT_GET): return
         if self.path=="/api/state": return self.send_json(WEBAPP.state())
+        if self.path=="/api/companion":
+            c=ensure_goal_state(lc())
+            if not COMPANION: return self.send_json({"ok":False,"message":"companion unavailable"},503)
+            return self.send_json({"ok":True,"companion":COMPANION.snapshot(c)})
         if self.path=="/api/export":
             data=ensure_goal_state(lc()); data["history"]=lh(); data["fg"]=lf(); return self.send_json(data)
         if self.path=="/api/storage-status":
@@ -1962,6 +1978,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except OSError: pass
                 return self.send_json({"ok":True,"message":"完整备份已恢复，请重启应用"})
             data=self.read_json()
+            if self.path=="/api/companion-event":
+                if not COMPANION: return self.send_json({"ok":False,"message":"companion unavailable"},503)
+                kind=task_text(data.get("kind",""))
+                if kind not in ("poke","feed","talk","celebrate","spend"):
+                    return self.send_json({"ok":False,"message":"unknown kind","reason":"未知的陪伴动作"},400)
+                c=ensure_goal_state(lc())
+                if kind=="spend":
+                    COMPANION.apply(kind, data, c, commit=False)
+                    sc(c)
+                    result=COMPANION.last_apply or {"ok":False,"applied":False,"reason":"积分加餐失败"}
+                else:
+                    result=COMPANION.apply(kind, data, c)
+                code=200 if result.get("ok") else 400
+                return self.send_json(result, code)
             if self.path=="/api/theme":
                 global UI_THEME
                 UI_THEME='dark' if data.get('theme')=='dark' else 'light'
@@ -2097,12 +2127,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"休息时长必须是数字"},400)
                 todays=[b for b in c.get("breaks",[]) if b.get("date")==today()]
                 if len(todays)>=3: return self.send_json({"ok":False,"message":"今天休息次数已用完"},400)
-                c.setdefault("breaks",[]); c["breaks"].append({"date":today(),"ts":datetime.now().isoformat(),"until":time.time()+mins*60,"minutes":mins,"reason":reason}); evlog(c,"break",reason,{"minutes":mins}); sc(c); return self.send_json({"ok":True})
+                item={"date":today(),"ts":datetime.now().isoformat(),"until":time.time()+mins*60,"minutes":mins,"reason":reason,"source":task_text(data.get("source","")) or "user"}
+                c.setdefault("breaks",[]); c["breaks"].append(item); evlog(c,"break",reason,{"minutes":mins})
+                if COMPANION: COMPANION.on_break_start(c, item, item.get("source") or "user", commit=False)
+                sc(c); return self.send_json({"ok":True})
             if self.path=="/api/break-end":
-                now=time.time(); ended=False
+                now=time.time(); ended=False; ended_item=None
                 for b in c.get("breaks",[]):
                     if isinstance(b,dict) and float(b.get("until",0) or 0)>now:
-                        b["until"]=now; b["ended"]=True; ended=True
+                        b["until"]=now; b["ended"]=True; ended=True; ended_item=b
+                if COMPANION and ended_item: COMPANION.on_break_end(c, ended_item, commit=False)
                 evlog(c,"break_end","结束休息",{"ended":ended}); sc(c)
                 return self.send_json({"ok":True,"ended":ended})
             if self.path=="/api/quit":
@@ -2313,8 +2347,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif typ=="break":
                     try: mins=max(1,min(60,int(action.get("minutes",5) or 5)))
                     except (TypeError,ValueError): mins=5
-                    c.setdefault("breaks",[]); c["breaks"].append({"date":today(),"ts":datetime.now().isoformat(),"until":time.time()+mins*60,"minutes":mins,"reason":"教练建议休息"})
-                    evlog(c,"break","教练建议休息",{"minutes":mins}); msg="已记录 {} 分钟休息".format(mins)
+                    item={"date":today(),"ts":datetime.now().isoformat(),"until":time.time()+mins*60,"minutes":mins,"reason":"教练建议休息","source":"coach_rest"}
+                    c.setdefault("breaks",[]); c["breaks"].append(item)
+                    evlog(c,"break","教练建议休息",{"minutes":mins})
+                    if COMPANION: COMPANION.on_break_start(c, item, "coach_rest")
+                    msg="已记录 {} 分钟休息".format(mins)
                 elif typ=="quiet":
                     c.setdefault("coach_context",{})["quiet_until"]=time.time()+24*3600
                     msg="已静默至明日"
@@ -2348,6 +2385,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try: i=int(data.get("task_idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
                 ok, message = ACCEPTANCE.manual_accept(c, i, data.get("reason", "manual approval"))
+                if ok: sc(c)
                 return self.send_json({"ok":ok,"message":message}, 200 if ok else 400)
                 return self.send_json({"ok":True,"message":"任务已手动放行"})
             if self.path=="/api/clear-fg":
@@ -2564,17 +2602,20 @@ def web_tray(url, server):
         u32.TranslateMessage(ctypes.byref(m)); u32.DispatchMessageW(ctypes.byref(m))
 
 def run_web():
-    global TASKS, AGENTS, FEEDBACK, ACCEPTANCE
+    global TASKS, AGENTS, FEEDBACK, ACCEPTANCE, COMPANION
+    COMPANION = CompanionService(STORE)
     TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
                         save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
-                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started)
+                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started,
+                        companion=lambda state, idx, previous, status: COMPANION.on_status(state, idx, previous, status, commit=False))
     AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
                           start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
     FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
                                save=save_goal_state, event=evlog, compact=sc)
     ACCEPTANCE = AcceptanceService(normalize=normalize_tasks, text=task_text, sync_pct=sync_pct,
                                    save=save_goal_state, event=evlog, outcome=adaptive.record_outcome,
-                                   learning_outcome=adaptive.record_learning_outcome)
+                                   learning_outcome=adaptive.record_learning_outcome,
+                                   companion=lambda state, idx, result: COMPANION.on_acceptance(state, idx, result, commit=False))
     global WEBAPP
     crash_mark_running()
     atexit.register(crash_mark_clean)
@@ -2987,16 +3028,19 @@ if __name__ == "__main__":
             _bl("main: CI mode, starting web app only")
             crash_mark_running()
             atexit.register(crash_mark_clean)
+            COMPANION = CompanionService(STORE)
             TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
                                 save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
-                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started)
+                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started,
+                        companion=lambda state, idx, previous, status: COMPANION.on_status(state, idx, previous, status, commit=False))
             AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
                                   start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
             FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
                                        save=save_goal_state, event=evlog, compact=sc)
             ACCEPTANCE = AcceptanceService(normalize=normalize_tasks, text=task_text, sync_pct=sync_pct,
                                            save=save_goal_state, event=evlog, outcome=adaptive.record_outcome,
-                                           learning_outcome=adaptive.record_learning_outcome)
+                                           learning_outcome=adaptive.record_learning_outcome,
+                                           companion=lambda state, idx, result: COMPANION.on_acceptance(state, idx, result, commit=False))
             WEBAPP = WebApp()
             # Port zero asks the OS for an available port; CI then publishes the
             # resolved URL for every downstream test step. A positive explicit

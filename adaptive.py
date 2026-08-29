@@ -37,13 +37,32 @@ def record_outcome(state, outcome, now=None):
 KINDS = {"too_hard", "too_easy", "no_time", "stuck", "wrong_direction"}
 
 
+def goal_contract(details):
+    """Return the normalized, inspectable commitment for one goal.
+
+    The contract deliberately keeps the user supplied outcome and standards
+    separate from the generated task plan: adaptive planning may change the
+    route, never the definition of success.
+    """
+    details = details if isinstance(details, dict) else {}
+    text = lambda value: str(value or "").strip()
+    items = lambda value: [text(item) for item in (value if isinstance(value, (list, tuple)) else [value]) if text(item)]
+    return {
+        "outcome": text(details.get("outcome")),
+        "deadline": text(details.get("deadline")),
+        "baseline": text(details.get("baseline")),
+        "success_criteria": items(details.get("success_criteria")),
+        "constraints": items(details.get("constraints")),
+    }
+
+
 def goal_readiness(details):
-    details = details or {}
+    contract = goal_contract(details)
     checks = (
         ("outcome", "最终成果"), ("deadline", "目标日期"), ("baseline", "当前基础"),
         ("success_criteria", "成功标准"), ("constraints", "现实约束"),
     )
-    missing = [label for key, label in checks if not details.get(key)]
+    missing = [label for key, label in checks if not contract[key]]
     questions = {
         "最终成果": "最终要交付什么可见成果？",
         "目标日期": "希望在哪一天前完成？",
@@ -53,7 +72,7 @@ def goal_readiness(details):
     }
     score = round((len(checks) - len(missing)) * 100 / len(checks))
     return {"score": score, "ready": not missing, "missing": missing,
-            "questions": [questions[label] for label in missing]}
+            "questions": [questions[label] for label in missing], "contract": contract}
 
 
 def record_task_outcome(task, passed, now=None):

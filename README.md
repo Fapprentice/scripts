@@ -21,6 +21,7 @@ The product loop is: define and clarify a goal → establish measurable standard
 - **AI app recognition**: two-stage (categories → specific apps) identification of task-relevant applications for a visual "work desktop"
 - **Time blocks**: auto-generated daily schedule with 90-minute focus sessions and auto-inserted breaks
 - **Foreground tracking**: every 2 seconds, foreground window title sampled and accumulated
+- **Companion growth**: one global Dafeiyu fish; poke/feed/talk, focus, rest, and acceptance write energy/bond to SQLite (`SCHEMA_VERSION=2`). Needs-review creates no growth. JSON is only a compatibility snapshot.
 - **Break timer**: up to 3 breaks per day, 1–60 minutes
 - **Exit guard**: in-app exit requires a reason when tasks are unfinished; the explicit tray “退出” command stops immediately and records the exit
 - **Privacy gate**: foreground-window tracking starts only after explicit consent; disabling detailed titles records only the executable name
