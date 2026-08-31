@@ -11,7 +11,10 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Dist = Join-Path $Root "dist"
-$Version = "0.2.0"
+$Version = (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
+$VersionInfo = Join-Path $Root "build\version_info.generated.txt"
+$versionInfoText = (Get-Content (Join-Path $Root "packaging\version_info.txt") -Raw) -replace '0\.2\.0', $Version
+Set-Content -Path $VersionInfo -Value $versionInfoText -NoNewline
 $OutputZip = Join-Path $Root "task-verge-portable-v$Version-win-x64.zip"
 
 function Sign-Artifact([string]$Path) {
@@ -45,7 +48,7 @@ if (-not $InstallerOnly) {
         --name TaskVerge --distpath $Dist --workpath $Work `
         --specpath (Join-Path $Root "build") `
         --icon (Join-Path $Root "web\taskverge.ico") `
-        --version-file (Join-Path $Root "packaging\version_info.txt") `
+        --version-file $VersionInfo `
         --add-data "$(Join-Path $Root 'web');web" `
         (Join-Path $Root "task-panel.pyw")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
@@ -67,7 +70,7 @@ if (-not $ZipOnly) {
     } else {
         $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe", "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
         if ($iscc) {
-            & $iscc $issPath
+            & $iscc "/DMyAppVersion=$Version" $issPath
             if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
             Sign-Artifact (Join-Path $Root "task-verge-setup-v$Version-win-x64.exe")
             Write-Host "  → Installer built" -ForegroundColor Green

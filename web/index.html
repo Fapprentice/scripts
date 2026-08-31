@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/app.css?v=12">
+  <link rel="stylesheet" href="/app.css?v=40">
 </head>
 <body>
   <!-- Ambient background -->
@@ -123,7 +123,7 @@
               <p id="companionRemain" class="companion-remain">今日还可戳 8 次 / 零食 0/3 / 说句话 6 次</p>
               <p id="companionLine">还没有进行中的任务时，我会在这里等你开始。</p>
               <div class="companion-treats">
-                <button type="button" data-companion="feed" data-treat="小鱼干">小鱼干</button>
+                <button type="button" data-companion="feed" data-treat="小鱼干">喂食 / 恢复</button>
                 <button type="button" data-companion="feed" data-treat="蛋糕">蛋糕</button>
                 <button type="button" data-companion="feed" data-treat="棒棒糖">棒棒糖</button>
                 <button type="button" data-companion="talk">说句话</button>
@@ -133,20 +133,17 @@
                 <button type="button" class="primary" id="companionPrimary" data-companion="focus">开始专注</button>
                 <button type="button" id="companionSecondary" data-companion="rest" hidden>休息一下</button>
               </div>
-              <div id="breakWidget" class="break-widget">
-                <input id="quickBreakReason" placeholder="休息原因（可选）">
-                <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
-                <button id="quickStartBreak">开始休息</button>
-                <span id="breakInfo"></span>
-              </div>
             </div>
           </section>
         </div>
         <aside id="missionEmpty" class="mission-empty">
+          <section id="goalReadiness" class="goal-readiness" hidden></section>
+          <div id="missionEmptyContent">
           <small>当前任务</small>
           <b>还没有进行中的任务</b>
           <p>把目标拆成下一步可执行、可验收的动作。生成今日任务后，这里会显示正在做的那一项。</p>
           <button type="button" class="primary" data-start-today>生成今日任务</button>
+          </div>
         </aside>
         <div class="dash-bottom">
           <div class="panel dash-tasks">
@@ -167,6 +164,12 @@
                 <small>补救行动</small>
                 <p>验收失败后，从一个最小可验证步骤重新开始。</p>
                 <button data-start-recovery>开始补救行动</button>
+                <div id="breakWidget" class="break-widget recovery-break">
+                  <input id="quickBreakReason" placeholder="休息原因（可选）">
+                  <select id="quickBreakMinutes"><option value="5">5 分</option><option value="10">10 分</option><option value="20">20 分</option><option value="30">30 分</option><option value="45">45 分</option></select>
+                  <button id="quickStartBreak">开始休息</button>
+                  <span id="breakInfo"></span>
+                </div>
               </div>
             </div>
           </div>
@@ -190,9 +193,10 @@
                   <label>成功标准（每行一条）<textarea id="goalCriteria" rows="4" placeholder="必须可观察、可计数或可验证"></textarea></label>
                   <label>现实约束（每行一条）<textarea id="goalConstraints" rows="4" placeholder="可用时间、工具、预算、环境或截止期限"></textarea></label>
                 </div>
-                <p id="goalReadiness" class="hint"></p>
+                <div id="goalSkillPack" class="goal-skill-pack" hidden></div>
+                <p id="goalDetailsReadiness" class="hint"></p>
               </div>
-              <footer><button id="deleteGoal" class="danger">删除目标</button><span></span><button data-close-goal-details>取消</button><button id="saveGoalDetails" class="primary">保存目标</button></footer>
+              <footer><button id="deleteGoal" class="danger">删除目标</button><button id="assistGoal" class="goal-assist">✦ AI 辅助完善</button><span></span><button data-close-goal-details>取消</button><button id="saveGoalDetails" class="primary">保存目标</button></footer>
             </section>
           </div>
           <button id="openAdvancedSettings" class="settings-entry">详细设置 <span>生成、专注、隐私与数据管理　›</span></button>
@@ -289,6 +293,6 @@
   </div>
   <script src="/views.js?v=2"></script>
   <script src="/api.js?v=2"></script>
-  <script src="/app.js?v=13"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>

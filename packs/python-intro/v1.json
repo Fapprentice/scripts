@@ -1,0 +1,175 @@
+{
+  "id": "python-intro",
+  "version": "v1",
+  "title": "Python 入门微主题",
+  "match": [
+    "python",
+    "编程",
+    "程序"
+  ],
+  "sinks": [
+    "python.app.script",
+    "python.debug.fix"
+  ],
+  "nodes": [
+    {
+      "id": "python.syntax.names",
+      "title": "变量与命名",
+      "description": "解释变量、赋值和命名规则。",
+      "demonstration": "explain",
+      "mastery_evidence": {
+        "behavior": "闭卷解释变量并给出一个例子",
+        "threshold": "解释含定义、用途和可运行例子",
+        "counterexample": "只会背术语不会举例，不算掌握"
+      }
+    },
+    {
+      "id": "python.syntax.types",
+      "title": "基本类型",
+      "description": "区分数字、字符串和列表的用途。",
+      "demonstration": "explain",
+      "mastery_evidence": {
+        "behavior": "为三种基本类型各写一个例子",
+        "threshold": "三个例子均可运行且类型正确",
+        "counterexample": "只列出类型名，不算掌握"
+      }
+    },
+    {
+      "id": "python.control.branch",
+      "title": "分支",
+      "description": "用 if/else 表达一个真实判断。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "写出含真假两条路径的小程序",
+        "threshold": "两条路径都有可检查输出",
+        "counterexample": "只有一条永远为真的分支，不算掌握"
+      }
+    },
+    {
+      "id": "python.control.loop",
+      "title": "循环",
+      "description": "用循环处理一组数据。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "写出循环程序并提交运行结果",
+        "threshold": "输出可复现且覆盖全部输入",
+        "counterexample": "手工打印每一行冒充循环，不算掌握"
+      }
+    },
+    {
+      "id": "python.functions.def",
+      "title": "函数",
+      "description": "把一段逻辑做成可复用函数。",
+      "demonstration": "deliverable",
+      "mastery_evidence": {
+        "behavior": "提交带参数和返回值的函数及调用",
+        "threshold": "至少两次调用结果正确",
+        "counterexample": "只有脚本顶层代码没有函数，不算掌握"
+      }
+    },
+    {
+      "id": "python.debug.read_error",
+      "title": "读懂报错",
+      "description": "根据 traceback 定位出错行。",
+      "demonstration": "explain",
+      "mastery_evidence": {
+        "behavior": "对着一份报错写出出错行和原因",
+        "threshold": "行号与原因都能核对",
+        "counterexample": "只说程序坏了，不算掌握"
+      }
+    },
+    {
+      "id": "python.debug.fix",
+      "title": "修复错误",
+      "description": "独立修好一个可复现的错误。",
+      "demonstration": "deliverable",
+      "mastery_evidence": {
+        "behavior": "提交修复后可运行的代码和原因",
+        "threshold": "修复后运行通过且写出原因",
+        "counterexample": "改到能跑但说不出原因，不算掌握"
+      }
+    },
+    {
+      "id": "python.app.script",
+      "title": "可运行小程序",
+      "description": "独立完成一个有输入输出的小程序。",
+      "demonstration": "deliverable",
+      "mastery_evidence": {
+        "behavior": "提交程序和一次真实运行记录",
+        "threshold": "给定输入能得到约定输出",
+        "counterexample": "代码不能运行，不算掌握"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "python.syntax.names",
+      "to": "python.syntax.types",
+      "kind": "hard",
+      "rationale": "类型例子建立在能命名和赋值之上。"
+    },
+    {
+      "from": "python.syntax.types",
+      "to": "python.control.branch",
+      "kind": "hard",
+      "rationale": "分支条件要用到可比较的值。"
+    },
+    {
+      "from": "python.control.branch",
+      "to": "python.control.loop",
+      "kind": "soft",
+      "rationale": "循环体里常有判断，但不是开始写循环的硬条件。"
+    },
+    {
+      "from": "python.control.loop",
+      "to": "python.functions.def",
+      "kind": "hard",
+      "rationale": "函数体需要能表达重复或批量处理。"
+    },
+    {
+      "from": "python.functions.def",
+      "to": "python.app.script",
+      "kind": "hard",
+      "rationale": "可运行小程序应拆成可调用的函数而不是一团脚本。"
+    },
+    {
+      "from": "python.debug.read_error",
+      "to": "python.debug.fix",
+      "kind": "hard",
+      "rationale": "修不好自己读不懂的报错。"
+    },
+    {
+      "from": "python.debug.fix",
+      "to": "python.app.script",
+      "kind": "soft",
+      "rationale": "独立交付前应能修自己的错误，但读错不是开始写程序的硬锁。"
+    }
+  ],
+  "covers": {
+    "程序可运行": [
+      "python.app.script"
+    ],
+    "可运行": [
+      "python.app.script"
+    ],
+    "调试": [
+      "python.debug.fix"
+    ]
+  },
+  "skippable": [
+    {
+      "id": "python.syntax.names",
+      "tags": [
+        "语法",
+        "已经"
+      ]
+    },
+    {
+      "id": "python.syntax.types",
+      "tags": [
+        "语法",
+        "已经"
+      ]
+    }
+  ]
+}

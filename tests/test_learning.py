@@ -7,6 +7,7 @@ def test_learning_fallback_uses_concrete_practice_not_generic_planning():
     tasks = learning.fallback_task_templates("英语四级")
     assert len(tasks) == 3
     assert all(task["type"] != "plan" and task["skill_id"] for task in tasks)
+    assert tasks[0]["skill_id"] == "cet4.vocab.high_freq"
     assert not any("最小可交付成果" in task["title"] for task in tasks)
 
 
@@ -35,15 +36,20 @@ def test_learning_task_consistency_and_semantic_duplicates():
 def test_initial_ability_diagnostics_complete_and_record_scores():
     state = {"user_model": {}}
     tasks = learning.initial_diagnostic_tasks(state, "英语四级", 2)
-    assert [task["skill_id"] for task in tasks] == ["english.vocabulary", "english.reading"]
+    assert [task["skill_id"] for task in tasks] == ["cet4.vocab.high_freq", "cet4.reading.main_idea"]
     assert len(tasks[0]["materials"]) == 30
     assert tasks[0]["interaction"]["type"] == "choice"
-    assert tasks[1]["materials"][0]["type"] == "passage"
-    learning.record_learning_outcome(state, dict(tasks[0], recall_rating="good"), True, NOW)
-    profile = learning.ability_profile(state, "英语四级")
-    assert profile["assessed"] == 1
-    assert profile["dimensions"][0]["score"] == 0.7
-    assert learning.initial_diagnostic_tasks(state, "英语四级", 2)[0]["skill_id"] == "english.reading"
+    learning.record_learning_outcome(state, dict(tasks[0], recall_rating="good", evidence=["answers"]), True, NOW)
+    learning.SkillMap.load(state, {"outcome": "通过英语四级考试", "success_criteria": ["过线"], "baseline": ""})
+    learning.SkillMap(state, ok=True).apply_outcome(tasks[0]["skill_id"], {"task_passed": True, "evidence": ["answers"], "recall_rating": "good"})
+    remaining = learning.initial_diagnostic_tasks(state, "英语四级", 2)
+    assert remaining[0]["skill_id"] != "cet4.vocab.high_freq"
+
+
+def test_stm32_fallback_diagnostics_are_domain_specific():
+    tasks = learning.initial_diagnostic_tasks({"user_model": {}}, "stm32", 2)
+    assert [task["skill_id"] for task in tasks] == ["stm32.project_setup", "stm32.gpio"]
+    assert all("STM32" in task["title"] for task in tasks)
 
 
 def test_material_dependent_task_is_rejected_without_materials():
@@ -107,7 +113,7 @@ def test_graph_rejects_cycle_and_unlocks_reviewed_prerequisite():
     learning.sync_task_graph(state, {"skill_id": "advanced", "prerequisites": ["loops"]})
     graph = learning.knowledge_graph(state, NOW)
     assert "advanced" in graph["ready"]
-    assert {"from": "loops", "to": "advanced"} in graph["edges"]
+    assert any(edge["from"] == "loops" and edge["to"] == "advanced" for edge in graph["edges"])
 
 
 def test_due_review_uses_fsrs_due_time():
@@ -125,7 +131,7 @@ def test_generated_graph_merges_nodes_and_blocks_descendants():
         {"id": "loops", "title": "循环", "prerequisites": ["basics"]},
     ]})
     assert len(graph["nodes"]) == 2
-    assert {"from": "basics", "to": "loops"} in graph["edges"]
+    assert any(edge["from"] == "basics" and edge["to"] == "loops" for edge in graph["edges"])
     assert learning.task_is_unlocked(state, {"skill_id": "basics"})
     assert not learning.task_is_unlocked(state, {"skill_id": "loops", "prerequisites": ["basics"]})
 

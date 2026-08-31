@@ -144,9 +144,14 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "skill_id": task_text(t.get("skill_id") or t.get("knowledge_component")),
             "criterion_ids": [task_text(x) for x in as_list(t.get("criterion_ids")) if task_text(x)],
             "prerequisites": as_list(t.get("prerequisites")),
+            "hint_ladder": [task_text(x) for x in as_list(t.get("hint_ladder")) if task_text(x)][:4],
+            "teach_back_prompt": task_text(t.get("teach_back_prompt")),
+            "independent_check": task_text(t.get("independent_check")),
+            "transfer_prompt": task_text(t.get("transfer_prompt")),
             "learning_task_type": task_text(t.get("learning_task_type")),
             "review_due_at": task_text(t.get("review_due_at")),
             "recall_rating": task_text(t.get("recall_rating")).lower(),
+            "demonstration": task_text(t.get("demonstration")),
             "materials": materials, "answer_key": answer_key, "interaction": interaction, "response": response,
         }
     title = task_text(t)
@@ -161,7 +166,8 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         "created_at": datetime.now().isoformat(), "started_at": "", "completed_at": "",
         "attempts": 0, "actual_seconds": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
         "skill_id": "", "criterion_ids": [], "prerequisites": [], "learning_task_type": "", "review_due_at": "",
-        "recall_rating": "",
+        "hint_ladder": [], "teach_back_prompt": "", "independent_check": "", "transfer_prompt": "",
+        "recall_rating": "", "demonstration": "",
         "materials": [], "answer_key": [], "interaction": {}, "response": "",
     }
 

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import adaptive
+import learning
 
 
 def state(task=None):
@@ -27,6 +28,31 @@ def test_goal_contract_normalizes_only_user_commitments():
                                       "constraints": "每天 30 分钟", "ignored": "plan"})
     assert contract == {"outcome": "上线", "deadline": "20261231", "baseline": "",
                         "success_criteria": ["可访问"], "constraints": ["每天 30 分钟"]}
+
+
+def test_too_easy_deepens_node_demonstration_without_lowering_standard():
+    c = {
+        "tasks": [{
+            "id": "t1", "title": "高频词汇", "status": "doing",
+            "estimated_minutes": 15, "attempts": 2, "actual_minutes": 20,
+            "acceptance": "至少 8/10 正确", "skill_id": "cet4.vocab.high_freq",
+            "demonstration": "recall", "evidence": ["answers.txt"],
+            "acceptance_result": {"pass": True},
+        }],
+        "user_model": {"skills": {
+            "cet4.vocab.high_freq": {
+                "demonstration": "recall",
+                "mastery_evidence": {"threshold": "至少 8/10 正确"},
+                "prerequisites": [],
+            },
+        }},
+    }
+    result = adaptive.record_feedback(c, 0, "太简单", "too_easy")
+    assert result["applied"] is True
+    skill = c["user_model"]["skills"]["cet4.vocab.high_freq"]
+    assert skill["demonstration"] == "practice"
+    assert "独立验证" in c["tasks"][0]["acceptance"]
+    assert "至少 8/10 正确" in c["tasks"][0]["acceptance"]
 
 
 def test_unproven_difficulty_does_not_lower_standard():
@@ -62,6 +88,32 @@ def test_wrong_direction_requires_confirmation():
     result = adaptive.record_feedback(c, 0, "方向不对", "wrong_direction")
     assert result["decision"] == "realign"
     assert result["automatic"] is False
+    assert c["tasks"][0]["acceptance"] == "原型可以运行"
+
+
+def test_confirmed_wrong_direction_realigns_skill_edge():
+    c = {
+        "tasks": [{
+            "id": "t1", "title": "限时短文", "status": "doing",
+            "estimated_minutes": 30, "attempts": 2, "actual_minutes": 35,
+            "acceptance": "不少于 120 词并记录用时", "skill_id": "cet4.writing.essay",
+            "evidence": ["draft.txt"], "acceptance_result": {},
+        }],
+        "user_model": {},
+    }
+    learning.SkillMap.load(c, {
+        "outcome": "通过英语四级考试",
+        "success_criteria": ["听力、阅读、写作达到考试要求"],
+        "baseline": "",
+    })
+    result = adaptive.record_feedback(c, 0, "方向不对", "wrong_direction", auto_apply=False)
+    assert result["applied"] is False
+    result["confirmed"] = True
+    adaptive.apply_decision(c, result)
+    assert result["applied"] is True
+    assert c["tasks"][0]["acceptance"] == "不少于 120 词并记录用时"
+    meta = c["user_model"]["skills"]["cet4.writing.essay"]["prerequisite_meta"]["cet4.writing.outline"]
+    assert meta["kind"] == "soft"
 
 
 def test_passive_overrun_adjusts_once():

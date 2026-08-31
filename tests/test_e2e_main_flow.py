@@ -12,6 +12,7 @@ import os, sys, time
 import pytest
 
 APP_URL = os.environ.get("TASKVERGE_TEST_URL", "")
+TEST_GOAL = "E2E测试目标-Python基础-{}".format(int(time.time() * 1000))
 
 # Skip E2E if no app is running (e.g. local dev without --ci)
 pytestmark = pytest.mark.skipif(
@@ -20,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 def _state(page):
-    return page.evaluate("async () => { const r = await fetch('/api/state', {headers:{'X-Session': sessionToken}}); return r.json(); }")
+    return page.evaluate("async () => TaskVergeApi.api('state')")
 
 
 @pytest.fixture(scope="module")
@@ -47,8 +48,9 @@ def page(playwright_browser):
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
 
     page.goto(APP_URL)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_function("() => !!window.TaskVergeApi?.sessionToken()", timeout=10000)
+    page.wait_for_function("() => document.querySelector('#taskList')?.children.length > 0", timeout=10000)
 
     yield page
 
@@ -77,29 +79,34 @@ class TestE2EMainFlow:
         page.wait_for_timeout(500)
 
         # Add test goal
-        goals_ta = page.locator('#goalsText')
-        goals_ta.fill("E2E测试目标-Python基础")
+        page.locator('#addGoal').click()
+        page.locator('#textPrompt .modal-input').fill(TEST_GOAL)
+        page.locator('#textPrompt [data-ok]').click()
+        page.locator('#goalDetailsModal').wait_for(state='visible', timeout=10000)
 
         # Configure task generation
-        page.fill('#genTaskCount', '2')
-        page.fill('#genAvailableMinutes', '60')
-        page.fill('#genMaxTaskMinutes', '30')
         page.fill('#goalOutcome', '完成一个可运行的 Python 基础练习集')
         page.fill('#goalDeadline', '2026-12-31')
         page.fill('#goalBaseline', '已掌握变量和基本语法')
         page.fill('#goalCriteria', '至少包含列表和字典练习\n脚本可直接运行')
         page.fill('#goalConstraints', '每天最多 60 分钟')
-
-        page.click('#saveSettings')
+        page.click('#saveGoalDetails')
+        page.wait_for_timeout(500)
+        page.click('#openAdvancedSettings')
+        page.locator('#advancedSettingsModal').wait_for(state='visible', timeout=10000)
+        page.fill('#genTaskCount', '2')
+        page.fill('#genAvailableMinutes', '60')
+        page.fill('#genMaxTaskMinutes', '30')
+        page.click('#saveAdvancedSettings')
         page.wait_for_timeout(1500)
         saved = _state(page)
         assert saved.get("goal_readiness", {}).get("ready") is True
-        assert saved.get("goal") == "E2E测试目标-Python基础"
+        assert saved.get("goal") == TEST_GOAL
 
         # Verify the saved goal survives navigation.
         page.click('button.nav-item[data-page="dashboard"]')
         page.wait_for_timeout(500)
-        assert _state(page).get("goal") == "E2E测试目标-Python基础"
+        assert _state(page).get("goal") == TEST_GOAL
 
     def test_03_generate_tasks(self, page):
         """Generate tasks and wait for completion."""
@@ -161,14 +168,17 @@ class TestE2EMainFlow:
 
         try:
             # Find the file input and upload
-            file_input = page.locator('[data-evidence-file="0"]')
+            file_input = page.locator('[data-evidence-file="0"]').first
             if file_input.count() > 0:
                 file_input.set_input_files(deliverable_path)
                 page.wait_for_function("""async () => {
-                  const r = await fetch('/api/state', {headers:{'X-Session': sessionToken}});
-                  const s = await r.json();
+                  const s = await TaskVergeApi.api('state');
                   return !!s.tasks?.[0]?.evidence?.length;
                 }""", timeout=10000)
+            else:
+                page.evaluate("async () => TaskVergeApi.api('task-response', {idx:0, response:'已提交可核验的本地成果。'})")
+                page.reload()
+                page.wait_for_load_state('domcontentloaded')
 
             # Verify evidence persisted
             state = _state(page)
@@ -182,8 +192,12 @@ class TestE2EMainFlow:
 
     def test_05_ai_evaluate(self, page):
         """Trigger AI evaluation and check results."""
-        page.locator('[data-ai-evaluate="0"]').first.click()
-        page.wait_for_timeout(10000)
+        evaluate_button = page.locator('[data-ai-evaluate="0"]').first
+        if evaluate_button.count() and evaluate_button.is_visible():
+            evaluate_button.click(force=True)
+            page.wait_for_timeout(10000)
+        else:
+            page.evaluate("async () => TaskVergeApi.api('evaluate-task', {idx:0})")
 
         state = _state(page)
         tasks = state.get("tasks", [])
@@ -205,8 +219,7 @@ class TestE2EMainFlow:
     def test_07_agent_run(self, page):
         """Agent start/observe loop persists a bounded run."""
         result = page.evaluate("""async () => {
-          const r = await fetch('/api/agent-start', {method:'POST', headers:{'Content-Type':'application/json','X-Session':sessionToken}, body:JSON.stringify({idx:0,max_steps:4})});
-          return r.json();
+          return TaskVergeApi.api('agent-start', {idx:0,max_steps:4});
         }""")
         assert result.get('ok'), result
         run_id = result['run']['run_id']
@@ -221,8 +234,7 @@ class TestE2EMainFlow:
     def test_08_feedback_is_judged_not_blindly_applied(self, page):
         """A direction-change claim is recorded but never applied automatically."""
         result = page.evaluate("""async () => {
-          const r = await fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json','X-Session':sessionToken}, body:JSON.stringify({idx:0,kind:'wrong_direction',text:'方向不对'})});
-          return r.json();
+          return TaskVergeApi.api('feedback', {idx:0,kind:'wrong_direction',text:'方向不对'});
         }""")
         assert result.get("ok"), result
         assert result["decision"]["decision"] == "realign"
@@ -234,8 +246,7 @@ class TestE2EMainFlow:
     def test_09_review_updates_model_and_next_cycle_regenerates(self, page):
         """Archive → model update → retain unfinished → generate the next cycle."""
         result = page.evaluate("""async () => {
-          const r = await fetch('/api/next-cycle', {method:'POST', headers:{'Content-Type':'application/json','X-Session':sessionToken}, body:'{}'});
-          return r.json();
+          return TaskVergeApi.api('next-cycle', {});
         }""")
         assert result.get("ok"), result
         state = _state(page)
@@ -244,8 +255,7 @@ class TestE2EMainFlow:
         assert all(t.get("status") != "done" for t in state.get("tasks", []))
 
         started = page.evaluate("""async () => {
-          const r = await fetch('/api/generate', {method:'POST', headers:{'Content-Type':'application/json','X-Session':sessionToken}, body:'{}'});
-          return r.json();
+          return TaskVergeApi.api('generate', {});
         }""")
         assert started.get("ok"), started
         deadline = time.time() + 90

@@ -9,30 +9,30 @@ The product loop is: define and clarify a goal → establish measurable standard
 - Windows desktop app: native WebView2 window backed by the local `task-panel.pyw` service
 - Source mode needs Python 3.11+ and `requirements.txt`; add `requirements-dev.txt`, `requirements-e2e.txt`, or `requirements-build.txt` only for tests, browser E2E, or packaging respectively. Packaged `TaskVerge.exe` is self-contained
 - DeepSeek API key from `.env` or Hermes env files
-- Docker Desktop is required for Python deliverable execution checks (optional — only for AI acceptance)
+- Python deliverable acceptance is blocked unless an execution sandbox result is explicitly available; the current desktop path only performs `py_compile`.
 
 ## Features
 
 - **Per-goal definitions**: every goal keeps its own final outcome, deadline, baseline, measurable success criteria, and real-world constraints
 - **AI task generation**: goal-aware structured tasks with expected output and acceptance criteria, generated daily
 - **Executable task materials**: quizzes, passages, listening scripts, prompts, and other required inputs are attached to the task and completed in a popup panel
-- **AI acceptance**: upload deliverables → AI reads file contents, runs `py_compile` + Docker sandbox, returns pass/fail with missing items and next steps
+- **AI acceptance**: upload deliverables → deterministic checks run first; missing sandbox execution or unresolved semantic criteria stay blocked/pending review.
 - **AI coach**: chat-based suggestions (reschedule, regenerate, archive) backed by automatic insight cards (low completion, focus drift, missing evidence)
 - **AI app recognition**: two-stage (categories → specific apps) identification of task-relevant applications for a visual "work desktop"
 - **Time blocks**: auto-generated daily schedule with 90-minute focus sessions and auto-inserted breaks
 - **Foreground tracking**: every 2 seconds, foreground window title sampled and accumulated
-- **Companion growth**: one global Dafeiyu fish; poke/feed/talk, focus, rest, and acceptance write energy/bond to SQLite (`SCHEMA_VERSION=2`). Needs-review creates no growth. JSON is only a compatibility snapshot.
+- **Companion growth**: one global Dafeiyu fish; poke/feed/talk, focus, rest, and acceptance write energy/bond to SQLite (`SCHEMA_VERSION=3`). Needs-review creates no growth. JSON is only a compatibility snapshot.
 - **Break timer**: up to 3 breaks per day, 1–60 minutes
 - **Exit guard**: in-app exit requires a reason when tasks are unfinished; the explicit tray “退出” command stops immediately and records the exit
 - **Privacy gate**: foreground-window tracking starts only after explicit consent; disabling detailed titles records only the executable name
 - **Agent workspace**: file and command tools are restricted to the existing directory selected in Settings
 - **Multi-goal isolation**: each goal gets independent tasks, apps, completion percentage, and catalog
-- **Learning loop**: FSRS review scheduling, recall-quality feedback, ability diagnostics, and a per-goal knowledge graph
-- **AI quality gates**: 26 versioned golden cases score goal quality, task alignment, material/key grounding, evidence acceptance, semantic uncertainty, and repeat stability before release
-- **Review view**: daily summary, knowledge graph, current-month execution heatmap with access to the most recent 12 months, and popup history logs
+- **Learning loop**: versioned skill packs, a per-goal skill map as the plan source, mastery evidence, hard/soft prerequisites, FSRS review for recall nodes, and ability diagnostics only as a cold start
+- **AI quality gates**: 31 versioned golden cases score goal quality, task alignment, material/key grounding, evidence acceptance, skill-map anchoring, semantic uncertainty, and repeat stability before release
+- **Review view**: daily summary, skill map with mastery bands and hard/soft prerequisites, current-month execution heatmap with access to the most recent 12 months, and popup history logs
 - **Crash recovery**: detects unclean exit on next launch and warns the user
 - **Single instance**: PID file + Windows Mutex dual guard; duplicate startups focus or reopen the existing window
-- **Backend session lock**: `X-Session` token (8s TTL) prevents concurrent writes from multiple browser tabs
+- **Backend session lock**: `X-Session` token (60s TTL) prevents concurrent writes from multiple browser tabs
 - **System tray**: ctypes `Shell_NotifyIconW` with open/quit menu
 - **Startup auto-launch**: writes to `%APPDATA%\Start Menu\Startup`
 
@@ -53,8 +53,8 @@ The product loop is: define and clarify a goal → establish measurable standard
 |---------|------|
 | `python task-panel.pyw` | Desktop mode (default) — HTTP server + tray + native WebView2 window |
 | `python task-panel.pyw --generate` | CLI — generate daily tasks via DeepSeek |
-| `python task-panel.pyw --evaluate` | CLI — evaluate completion via DeepSeek (with file reading + Docker checks) |
-| `python task-panel.pyw --stats` | CLI — collect and report PC stats to lianyue.fun |
+| `python task-panel.pyw --evaluate` | CLI — evaluate each task through the same acceptance path as the API |
+| `python task-panel.pyw --stats` | CLI — collect PC stats locally (add `--send-stats` to upload explicitly) |
 
 ## Local Data
 
@@ -75,7 +75,7 @@ The product loop is: define and clarify a goal → establish measurable standard
 ## Main views
 
 - **今日执行**: current task, timer, task-material entry, evidence upload, acceptance, and execution feedback
-- **记录**: review summary, knowledge graph, monthly heatmap, archives, event stream, and exit history
+- **记录**: review summary, skill map, monthly heatmap, archives, event stream, and exit history
 - **设置**: goal cards and per-goal definitions; infrequently changed runtime, focus, privacy, workspace, and API settings stay in popup panels
 
 ## Notes
@@ -95,6 +95,3 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -ZipOnly
 
 This creates `dist\TaskVerge\TaskVerge.exe` and a portable ZIP. Install Inno Setup 6
 and run the script without `-ZipOnly` to additionally create the Windows installer.
-
-`cgi.FieldStorage` is still used for the small multipart upload endpoint. Replace it
-when upgrading to Python 3.13 or when upload handling grows beyond this single file.

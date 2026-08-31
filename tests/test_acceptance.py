@@ -140,7 +140,7 @@ class TestAcceptanceRules(unittest.TestCase):
         """Full pipeline: task with no evidence fails fast."""
         verdict = acceptance.check_evidence(self.task, self.empty_details)
         self.assertFalse(verdict.pass_)
-        self.assertFalse(verdict.needs_llm)
+        self.assertTrue(verdict.needs_llm)
         self.assertIn("R1_evidence", verdict.checks)
 
     def test_behavior_task_uses_light_confirmation(self):
@@ -167,12 +167,13 @@ class TestAcceptanceRules(unittest.TestCase):
                     "path": fp, "exists": True,
                     "content": "print('hello world')",
                     "python_check": {"ok": r.returncode == 0, "output": ""},
-                    "docker_run": {"skipped": True},
+                    "docker_run": {"ok": True},
                 }],
             }
             verdict = acceptance.check_evidence(self.task, details)
-            # Should pass all deterministic checks (R5/R6 may still flag needs_llm)
-            self.assertTrue(verdict.pass_)
+            # Soft rules cannot pass without an LLM verdict.
+            self.assertFalse(verdict.pass_)
+            self.assertTrue(verdict.needs_llm)
             for check_id in ["R1_evidence", "R2_files_exist", "R3_py_compile", "R4_docker_run"]:
                 self.assertTrue(
                     verdict.checks.get(check_id, {}).get("pass", False),

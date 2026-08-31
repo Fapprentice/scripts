@@ -8,7 +8,7 @@
 
 ## 结论（给设计/实现）
 
-当时的大肥鱼是**纯展示 + 前端瞬时演出**。本结论仅适用于 v1 基线；当前版本已经通过 `CompanionService`、schema v2 及 `/api/companion*` 完成持久化养成，并接入任务、休息和验收事务。
+当时的大肥鱼是**纯展示 + 前端瞬时演出**。本结论仅适用于 v1 基线；当前版本已经通过 `CompanionService`、schema v3 及 `/api/companion*` 完成持久化养成，并接入任务、休息和验收事务。
 
 硬约束（不可破）：
 
@@ -17,7 +17,7 @@
 3. **不得把 `motivation.points` 直接映射为精力**。积分账本已含负分（跳过 -5、失败 -3），那是执行反馈，不是宠物生命值。
 4. **`needs_review` 不得涨养成、不得标 done、不得插入补救任务**（现验收已如此）。
 
-交付物给下游：本文件。设计任务应产出 `companion-design.md`；实现任务应新增 `companion_service.py` + schema v2，而不是改 `acceptance.py` 判定规则。
+交付物给下游：本文件。设计任务应产出 `companion-design.md`；实现任务应新增 `companion_service.py` + schema v3，而不是改 `acceptance.py` 判定规则。
 
 ---
 
@@ -60,7 +60,7 @@ UI 宿主：`web/index.html` `#companion`；逻辑：`web/app.js` `companionSnap
 
 ### 2.1 版本与迁移
 
-- `state_store.py`：历史基线为 **`SCHEMA_VERSION = 1`**、`MIGRATIONS = {1: "initial_schema"}`；当前版本为 schema v2，并包含 companion 迁移
+- `state_store.py`：历史基线为 **`SCHEMA_VERSION = 1`**、`MIGRATIONS = {1: "initial_schema"}`；当前版本为 schema v3，并包含 companion 与技能先修迁移
 - 打开已有库且 `PRAGMA user_version < SCHEMA_VERSION` 时先 `create_backup("pre-migration")`
 - 升级循环：`range(current+1, SCHEMA_VERSION+1)` 写入 `schema_migrations`，再 `PRAGMA user_version=SCHEMA_VERSION`
 - **库比应用新** → `StorageCorruptionError("database schema is newer than this application")`，禁止用空库覆盖
@@ -295,7 +295,7 @@ history 项：{outcome, points, ts}
 
 | 接缝 | 文件 | 做法 |
 |---|---|---|
-| schema v2 + 投影/备份 | `state_store.py` | `SCHEMA_VERSION=2`，pre-migration，新表，健康报告 |
+| schema v3 + 投影/备份 | `state_store.py` | `SCHEMA_VERSION=3`，技能先修含 kind/rationale，pre-migration，新表，健康报告 |
 | 状态机 | 新 `companion_service.py` | 日上限、去重、delta、默认行 |
 | 编排 | `task-panel.pyw` `run_web` | 与 TASKS/ACCEPTANCE 一起注入；`/api/companion`, `/api/companion-event`；`state()` 加快照 |
 | 验收旁路 | `acceptance_service.py` | 可选 callback；不改 `acceptance.py` |

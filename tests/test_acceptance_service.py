@@ -101,3 +101,33 @@ def test_learning_task_requires_recall_rating():
     ok, message = service.manual_accept(state, 0)
     assert ok is False
     assert "recall quality" in message
+
+
+def test_hard_locked_skill_cannot_pass_acceptance():
+    service, _ = _service()
+    state = {
+        "tasks": [{"status": "pending", "skill_id": "cet4.vocab.collocation", "evidence": ["x.txt"]}],
+        "done_flags": [False],
+        "user_model": {"skills": {
+            "cet4.vocab.high_freq": {"demonstration": "recall", "mastery": 0, "prerequisites": []},
+            "cet4.vocab.collocation": {
+                "demonstration": "practice",
+                "prerequisites": ["cet4.vocab.high_freq"],
+                "prerequisite_meta": {"cet4.vocab.high_freq": {"kind": "hard", "rationale": "没有词义就无法判断搭配"}},
+            },
+        }},
+    }
+    ok, result = service.persist_result(state, 0, {"status": "passed", "reason": "ok"})
+    assert ok is True
+    assert result["status"] != "passed"
+    assert state["done_flags"][0] is False
+    assert state["user_model"]["skills"]["cet4.vocab.collocation"].get("contract_met") is not True
+
+
+def test_deliverable_skill_does_not_require_recall_rating():
+    service, saved = _service()
+    state = {"tasks": [{"status": "pending", "skill_id": "python.app.script", "evidence": ["app.py"]}],
+             "done_flags": [False],
+             "user_model": {"skills": {"python.app.script": {"demonstration": "deliverable"}}}}
+    ok, message = service.manual_accept(state, 0)
+    assert ok is True

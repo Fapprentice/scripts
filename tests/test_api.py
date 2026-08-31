@@ -180,7 +180,7 @@ class TestErrorHandling:
     def test_nonexistent_endpoint_returns_404(self):
         r = _get("/api/nonexistent-xyz")
         status = r.get("_status", 200)
-        assert status in (404, 200), f"Nonexistent endpoint: {r}"  # 200 if caught by static file handler
+        assert status == 404, f"Nonexistent endpoint: {r}"
 
 
 
@@ -204,7 +204,7 @@ class TestSafetyEndpoints:
 class TestReviewedFixes:
     def test_settings_persist_schedule_workspace_and_consent(self):
         r = _post("/api/settings", {
-            "goals": ["回归目标"], "active_goal": 0,
+            "goals": [{"id":"goal_regression", "title":"回归目标"}], "active_goal": 0,
             "schedule": {"focus_template": "25"}, "workspace": os.getcwd(),
             "privacy": {"share_foreground_with_ai": True},
         })
@@ -218,7 +218,7 @@ class TestReviewedFixes:
 
     def test_goal_delete_archives_goal_and_keeps_tasks(self):
         assert _post("/api/settings", {
-            "goals": ["保留目标", "待删除目标"], "active_goal": 1,
+            "goals": [{"id":"goal_keep", "title":"保留目标"}, {"id":"goal_delete", "title":"待删除目标"}], "active_goal": 1,
         }).get("ok")
         assert _post("/api/tasks", {"tasks": [{"title": "归档后仍保留的任务"}]}).get("ok")
         before = _get("/api/export")
@@ -228,6 +228,7 @@ class TestReviewedFixes:
         assert deleted["archived_goal"]["title"] == "待删除目标"
         state = _get("/api/state")
         assert [g["title"] for g in state["goals"]] == ["保留目标"]
+        assert all(isinstance(g, dict) and g.get("id") and g.get("title") for g in state["goals"])
         after = _get("/api/export")
         assert after.get("tasks_by_goal", {}).get("goal_1"), after
 

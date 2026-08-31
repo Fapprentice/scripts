@@ -13,7 +13,7 @@
 
 **主要功能**
 - **AI 任务生成**：按目标生成带预期产出与验收标准的每日任务
-- **AI 验收**：上传交付物 → AI 读取文件、跑 `py_compile` + Docker 沙箱 → 返回通过/缺失项/下一步
+- **AI 验收**：上传交付物 → 先跑确定性检查；缺少沙箱结果或语义条件未决时保持待复核，不会误报通过
 - **AI 教练**：聊天式建议（改期/重生成/归档），配自动洞察卡片（完成率低、专注漂移、缺证据）
 - **AI 应用识别**：两阶段（分类→具体应用）识别任务相关应用，构建可视化"工作桌面"
 - **时间块**：自动生成每日日程（90 分钟专注时段 + 自动休息）
@@ -22,10 +22,10 @@
 - **Agent 工作区**：文件/命令工具限定在设置中选择的目录内
 
 **技术栈**
-- Python 3.11+，以标准库为主（`http.server` / `ctypes` / `subprocess`）；唯一 pip 依赖 `fsrs==6.3.1`（`learning.py` 做 FSRS 调度 + 知识图谱，`requirements.txt` 已核实）
+- Python 3.11+，以标准库为主（`http.server` / `ctypes` / `subprocess`）；唯一 pip 依赖 `fsrs==6.3.1`（`learning.py` 做 FSRS 调度与技能地图，`requirements.txt` 已核实）
 - 前端：无构建的原生 HTML/CSS/JS SPA（`web/`，5 页）
 - 桌面壳：WebView2 原生窗口（pywebview）+ 系统托盘
-- 外部服务：DeepSeek API（密钥在 `.env` 或 Hermes env）；lianyue.fun pc-stats
+- 外部服务：DeepSeek API（密钥在 `.env` 或 Hermes env）；PC stats 默认只在本地收集，需显式 `--send-stats` 才上传
 - 打包：PyInstaller + Inno Setup，当前版本 **v0.2.0**（仓库内有 `task-verge-setup-v0.2.0-win-x64.exe` 与 portable zip）
 - CI：GitHub Actions（pytest + Playwright E2E，`.github/workflows/ci.yml`）
 

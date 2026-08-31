@@ -75,5 +75,6 @@
     try { await fetch('/api/heartbeat', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Session': sessionToken}, body: '{}'}); } catch (_) {}
   }
   api.onError = null;
-  global.TaskVergeApi = {api, uploadApi, logEvent, ensureSession, heartbeat};
+  global.TaskVergeApi = {api, uploadApi, logEvent, ensureSession, heartbeat,
+    sessionToken: () => sessionToken};
 })(window);

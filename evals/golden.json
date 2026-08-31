@@ -49,6 +49,11 @@
     {"id": "high-impact-review-23", "risk_tags": ["human_review"], "slices": ["high_impact"]},
     {"id": "repeat-stability-24", "risk_tags": ["stability"], "repeat_group": "stable-1"},
     {"id": "repeat-stability-25", "risk_tags": ["stability"], "repeat_group": "stable-1"},
-    {"id": "repeat-stability-26", "risk_tags": ["stability"], "repeat_group": "stable-1"}
+    {"id": "repeat-stability-26", "risk_tags": ["stability"], "repeat_group": "stable-1"},
+    {"id": "skill-map-unknown-27", "slices": ["learning"], "risk_tags": ["skill_map"], "expected": {"decision": "fail"}, "artifact": {"tasks": [{"id": "t1", "title": "完成循环", "description": "编写程序", "criterion_ids": ["c1"], "estimated_minutes": 20, "expected_output": "程序", "acceptance": "可运行", "skill_id": "invented.skill", "materials": [{"id": "m1", "type": "prompt", "content": "完成指定结果"}], "answer_key": [{"id": "k1", "material_ids": ["m1"], "criterion_id": "c1", "answer": "完成"}]}], "skill_map": {"coverage": true, "pack_id": "python-intro", "nodes": [{"id": "python.control.loop", "mastery_evidence": {"threshold": "输出可复现"}}], "edges": [], "blocked": ["invented.skill"]}}},
+    {"id": "skill-map-coverage-28", "slices": ["learning"], "risk_tags": ["skill_map"], "expected": {"decision": "fail"}, "artifact": {"skill_map": {"coverage": false, "gaps": ["口语达到考试要求"], "pack_id": "cet4", "nodes": [{"id": "cet4.vocab.high_freq", "mastery_evidence": {"threshold": "8/10"}}], "edges": []}}},
+    {"id": "skill-map-skip-focus-29", "slices": ["learning"], "risk_tags": ["skill_map"], "expected": {"decision": "fail"}, "artifact": {"skill_map": {"coverage": true, "pack_id": "cet4", "focus": {"skill_id": "cet4.listening.short_dialogue"}, "nodes": [{"id": "cet4.listening.short_dialogue", "band": "skipped", "mastery_evidence": {"threshold": "4/5"}}], "edges": []}}},
+    {"id": "skill-map-standard-hold-30", "slices": ["learning"], "risk_tags": ["skill_map"], "expected": {"decision": "fail"}, "artifact": {"skill_map": {"coverage": true, "pack_id": "cet4", "lowered_standard": true, "nodes": [{"id": "cet4.vocab.high_freq", "mastery_evidence": {"threshold": "8/10"}}], "edges": []}}},
+    {"id": "skill-map-proposal-lock-31", "slices": ["learning"], "risk_tags": ["skill_map"], "expected": {"decision": "fail"}, "artifact": {"skill_map": {"coverage": true, "pack_id": "cet4", "proposal_error": "pack_version", "nodes": [{"id": "cet4.vocab.high_freq", "mastery_evidence": {"threshold": "8/10"}}], "edges": []}}}
   ]
 }

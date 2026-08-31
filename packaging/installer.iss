@@ -2,7 +2,9 @@
 ; Run ISCC.exe installer.iss after running build.ps1 to populate dist/
 
 #define MyAppName "Task Verge"
-#define MyAppVersion "0.2.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.2.0"
+#endif
 #define MyAppPublisher "Task Verge"
 #define MyAppExeName "TaskVerge.exe"
 

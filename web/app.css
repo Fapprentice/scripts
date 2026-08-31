@@ -8,8 +8,6 @@
    exception is the sidebar gradient (linear-gradient 180deg
    #11151D -> #0C1118), preserved verbatim.
    ============================================================ */
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-
 /* ============================================================
    1. Token layer
    ============================================================ */
@@ -520,7 +518,27 @@ label {
   overflow: hidden;
   position: relative;
 }
-#dashboard:has(#currentTaskBar) #missionEmpty { display: none; }
+#dashboard.page.active:has(#currentTaskBar) #missionEmpty { display: none; }
+#dashboard.page.active:has(#currentTaskBar) {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.18fr);
+  grid-template-rows: minmax(280px, 1.26fr) minmax(0, 0.74fr);
+  grid-template-areas:
+    "hero mission"
+    "tasks motivation";
+  overflow: hidden;
+}
+#dashboard.page.active:has(#currentTaskBar) .dash-bottom { display: contents; }
+#dashboard.page.active:has(#currentTaskBar) #currentTaskBar,
+#dashboard.page.active:has(#currentTaskBar) .mission-card {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+#dashboard.page.active:has(#currentTaskBar) .mission-card {
+  overflow: auto;
+}
+#dashboard.page.active:has(#currentTaskBar) .dash-side { display: flex; }
 
 @keyframes pageIn {
   from { opacity: 0; transform: translateY(8px); }
@@ -658,7 +676,7 @@ label {
   align-self: stretch;
   min-height: 0;
   height: 100%;
-  padding: 36px 8px 8px;
+  padding: 30px 8px 4px;
   border-radius: 22px;
   overflow: hidden;
   background:
@@ -675,9 +693,10 @@ label {
 }
 .companion-pet {
   position: relative;
-  width: min(260px, 100%);
+  width: auto;
   height: auto;
-  max-height: 340px;
+  max-width: 100%;
+  max-height: min(340px, calc(100% - 34px));
   object-fit: contain;
   object-position: center center;
   animation: companionIdle 3.2s var(--ease-out) infinite;
@@ -793,7 +812,7 @@ label {
   color: var(--mc-muted);
   font-size: var(--fs-2xs);
 }
-.companion-stat b { color: var(--mc-text); font-variant-numeric: tabular-nums; text-align: right; }
+.companion-stat b { color: var(--mc-text); min-width: 34px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .companion-bar {
   height: 8px;
   border-radius: 99px;
@@ -889,6 +908,9 @@ label {
 }
 
 .break-widget { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-3); flex-wrap: wrap; }
+.recovery-break { margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--mc-border); }
+.recovery-break input { min-width: 0; width: 100%; }
+.recovery-break select, .recovery-break button { flex: 1 1 auto; }
 .break-widget input { flex: 1; min-width: 140px; }
 .break-widget #breakInfo { font-size: var(--fs-2xs); color: var(--mc-muted); margin-left: var(--sp-1); font-variant-numeric: tabular-nums; }
 /* break countdown state: end-break button */
@@ -1019,7 +1041,7 @@ label {
   overflow: visible;
 }
 
-.mission-info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.mission-info { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 8px; min-width: 0; }
 .mission-info > div {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
@@ -1182,8 +1204,8 @@ label {
 .goal-ancestry i { color: var(--mc-muted-2); font-style: normal; }
 
 /* P0 fix: learning meta gets a tinted background */
-.learning-meta { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin: 2px 0; font-size: var(--fs-2xs); color: var(--mc-muted); }
-.learning-meta b, .learning-meta span { padding: 3px 8px; border-radius: var(--r-pill); background: var(--mc-primary-soft); }
+.learning-meta { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin: 2px 0; font-size: var(--fs-2xs); color: var(--mc-muted); min-width: 0; }
+.learning-meta b, .learning-meta span { max-width: 100%; padding: 3px 8px; border-radius: var(--r-pill); background: var(--mc-primary-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learning-meta b { color: var(--mc-primary); }
 
 .recall-rating { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
@@ -1471,25 +1493,69 @@ label {
 .review-log-modal .advanced-settings-dialog { width: min(760px, calc(100vw - 48px)); }
 .review-log-modal .log-list { max-height: none; }
 
-.knowledge-graph { margin-top: 18px; padding-top: var(--sp-4); border-top: 1px solid var(--mc-border); }
-.knowledge-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
-/* P0 fix: knowledge nodes get border + background from tokens */
+.knowledge-graph { margin: 0; padding: 0; border: 0; min-width: 0; }
+#knowledgeGraphHost.panel { min-width: 0; overflow: hidden; }
+.knowledge-nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  max-height: min(52vh, 420px);
+  overflow: auto;
+}
 .knowledge-node {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 10px;
-  padding: 10px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 8px 10px;
   border: 1px solid var(--mc-border);
   border-radius: var(--r-md);
-  background: var(--mc-panel);
+  background: var(--mc-canvas);
 }
-.knowledge-node b { color: var(--mc-text); font-weight: 700; }
-.knowledge-node span { color: var(--mc-primary); font-weight: 700; font-size: var(--fs-xs); }
-.knowledge-node small { grid-column: 1 / -1; color: var(--mc-muted); font-size: var(--fs-2xs); }
+.knowledge-node b {
+  min-width: 0;
+  color: var(--mc-text);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.knowledge-node span { color: var(--mc-primary); font-weight: 700; font-size: var(--fs-2xs); white-space: nowrap; }
+.knowledge-node small {
+  grid-column: 1 / -1;
+  color: var(--mc-muted);
+  font-size: var(--fs-2xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .knowledge-node.blocked { opacity: 0.58; }
+.knowledge-node.band-skipped span { color: var(--mc-muted); }
+.knowledge-node.band-due { border-color: var(--mc-primary); }
 .knowledge-node.active { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(91, 92, 226, 0.16); }
-.knowledge-empty { display: grid; place-items: center; min-height: 150px; color: var(--mc-muted); text-align: center; }   /* AA */
-#review .knowledge-nodes { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.mission-skill {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+  margin: 8px 0;
+  min-width: 0;
+}
+.mission-skill b { color: var(--mc-muted); font-size: var(--fs-2xs); }
+.mission-skill span {
+  min-width: 0;
+  color: var(--mc-text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mission-skill small { grid-column: 1 / -1; color: var(--mc-muted); font-size: var(--fs-2xs); line-height: 1.4; overflow-wrap: anywhere; }
+.goal-skill-pack { margin-top: 12px; padding: 12px; border: 1px solid var(--mc-border); border-radius: var(--r-md); min-width: 0; }
+.goal-skill-pack p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.goal-skill-pack .skip-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.goal-skill-pack .skill-map-clear { margin-top: 10px; }
+.knowledge-empty { display: grid; place-items: center; min-height: 72px; color: var(--mc-muted); text-align: center; padding: 8px; overflow-wrap: anywhere; }
+#review .grid { align-items: start; }
+#review .knowledge-nodes { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 #review .knowledge-node { padding: 6px 8px; font-size: var(--fs-2xs); }
 
 /* ============================================================
@@ -1590,6 +1656,25 @@ label {
 .advanced-settings-dialog > footer { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 24px; border-top: 1px solid var(--mc-border); }
 .advanced-settings-dialog > footer > span { flex: 1; }
 .advanced-settings-dialog > footer button { min-width: 110px; }
+.goal-assist { color: var(--mc-primary); border-color: var(--mc-primary); background: var(--mc-primary-soft); }
+.goal-assist:disabled { opacity: .65; cursor: wait; }
+.task-details-dialog { width: min(680px, calc(100vw - 40px)); }
+.task-details-modal { align-items: center; justify-content: center; }
+.task-details-dialog header { padding: 24px 28px 20px; background: linear-gradient(135deg, var(--mc-primary-soft), var(--mc-panel) 58%); }
+.task-details-dialog header h2 { max-width: 560px; margin-top: 6px; font-size: clamp(22px, 3vw, 30px); line-height: 1.3; }
+.task-detail-kicker { color: var(--mc-primary); font-size: var(--fs-xs); font-weight: 700; }
+.task-details-dialog .advanced-settings-body { padding: 22px 28px 26px; }
+.task-detail-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.task-detail-tags span { padding: 6px 10px; border-radius: var(--r-pill); color: var(--mc-primary); background: var(--mc-primary-soft); font-size: var(--fs-xs); font-weight: 650; }
+.task-detail-grid { display: grid; gap: 12px; }
+.task-detail-field { padding: 14px 16px; border: 1px solid var(--mc-border); border-radius: var(--r-md); background: var(--mc-canvas); }
+.task-detail-field small { color: var(--mc-muted); font-size: var(--fs-xs); font-weight: 700; }
+.task-detail-field p { margin: 6px 0 0; color: var(--mc-text); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-detail-support { padding: 16px; border: 1px solid var(--mc-primary); border-radius: var(--r-md); background: var(--mc-primary-soft); }
+.task-detail-support > b { color: var(--mc-primary); }
+.task-detail-support ol { display: grid; gap: 8px; margin: 10px 0 14px; padding-left: 22px; color: var(--mc-text); }
+.task-detail-support li b { margin-right: 8px; color: var(--mc-primary); font-size: var(--fs-xs); }
+.task-detail-support .task-detail-field { margin-top: 10px; border-color: color-mix(in srgb, var(--mc-primary) 24%, var(--mc-border)); background: var(--mc-panel); }
 
 .gen-settings {
   display: grid;
@@ -1855,6 +1940,31 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .task-materials { max-height: 120px; }
 }
 
+/* Compact mission view: keep the complete acceptance form inside short WebView windows. */
+@media (min-width: 821px) and (max-height: 700px) {
+  .mission-card { padding: 10px 14px; }
+  .mission-status button { padding: 4px 9px; }
+  .mission-title { grid-template-columns: minmax(0, 1fr) 138px; gap: 10px; margin: 3px 0 5px; }
+  .mission-title h2 { font-size: clamp(22px, 2.25vw, 30px); line-height: 1.1; }
+  .mission-title strong { font-size: 20px; }
+  .mission-title span { font-size: 11px; }
+  .mission-meta { gap: 4px; margin: 0 0 4px; }
+  .mission-meta span { padding: 2px 6px; }
+  .mission-description { margin: 0 0 4px; line-height: 1.35; }
+  .mission-card h4 { margin: 4px 0 2px; }
+  .mission-next { padding: 5px 9px; line-height: 1.3; }
+  .mission-info { gap: 6px; margin-top: 5px; }
+  .mission-info > div { grid-template-columns: 58px minmax(0, 1fr); gap: 5px; padding: 4px 7px; }
+  .mission-info b, .mission-info span { font-size: 11px; }
+  .mission-skill { margin: 4px 0; line-height: 1.25; }
+  .mission-rating { gap: 8px; margin-top: 5px; }
+  .mission-rating button { min-height: 27px; padding: 2px 7px; }
+  .mission-upload { min-height: 42px; }
+  .mission-upload small { font-size: 10px; }
+  .mission-card footer { margin-top: 5px; }
+  .mission-card footer button { min-height: 31px; padding: 5px 12px; }
+}
+
 /* ============================================================
    15. Dashboard console — viewport-fit grid (no page scroll)
    Wide: hero | mission  on top, tasks | motivation below.
@@ -1884,3 +1994,211 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .acceptance-check.needs_review, .acceptance-decision.needs_review, .acceptance-decision.review { color: var(--mc-warn); }
 .acceptance-check.passed, .acceptance-decision.passed, .acceptance-decision.accepted { color: var(--mc-good); }
 button.recovery-task { margin-top: var(--sp-2); }
+/* ---- Focus plan layout (selected desktop direction) ----
+   Keep the existing DOM and behavior, but make the dashboard read as one
+   vertical plan with a persistent companion utility rail. */
+@media (min-width: 901px) {
+  #dashboard.page.active,
+  #dashboard.page.active:has(#currentTaskBar) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: minmax(300px, 1.1fr) minmax(240px, 0.9fr);
+    grid-template-areas:
+      "mission companion"
+      "queue companion";
+    gap: 16px 22px;
+    padding: 24px 28px 28px;
+    overflow-y: auto;
+    background: var(--mc-canvas);
+  }
+
+  #dashboard.page.active .dash-top { display: contents; }
+  #dashboard.page.active #companion {
+    grid-area: companion;
+    align-self: stretch;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    padding: 22px 20px;
+    border: 1px solid var(--mc-border);
+    border-radius: var(--r-lg);
+    background: var(--mc-panel);
+    box-shadow: var(--shadow-sm);
+  }
+  #dashboard.page.active .companion-stage {
+    order: 0;
+    min-height: 250px;
+    padding: 0;
+    background: transparent;
+  }
+  #dashboard.page.active .companion-pet { width: min(210px, 80%); max-height: 260px; }
+  #dashboard.page.active .companion-speech,
+  #dashboard.page.active .companion-mission,
+  #dashboard.page.active #companionLine,
+  #dashboard.page.active .companion-actions,
+  #dashboard.page.active #companionSpend,
+  #dashboard.page.active .companion-treats button:not([data-treat="小鱼干"]) { display: none; }
+  #dashboard.page.active .companion-copy { display: contents; }
+  #dashboard.page.active .companion-head {
+    order: 1;
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    margin: 0 0 18px;
+  }
+  #dashboard.page.active .companion-head b { font-size: var(--fs-lg); }
+  #dashboard.page.active .companion-tags { justify-content: center; }
+  #dashboard.page.active .companion-stats {
+    order: 2;
+    display: grid;
+    gap: 14px;
+    margin-top: 0;
+  }
+  #dashboard.page.active .companion-stat { grid-template-columns: 48px minmax(0, 1fr) 28px; }
+  #dashboard.page.active .companion-remain {
+    order: 3;
+    margin: 18px 0 0;
+    text-align: center;
+  }
+  #dashboard.page.active .companion-treats { order: 4; margin-top: 20px; }
+  #dashboard.page.active .companion-treats button[data-treat="小鱼干"] {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    color: var(--mc-primary);
+    border-color: var(--mc-primary);
+    background: var(--mc-panel);
+    font-size: var(--fs-sm);
+    font-weight: 650;
+  }
+
+  #dashboard.page.active #currentTaskBar {
+    grid-area: mission;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    align-self: stretch;
+  }
+  #dashboard.page.active .mission-card {
+    height: auto;
+    min-height: 0;
+    padding: 24px 28px 22px;
+    overflow: visible;
+    box-shadow: none;
+  }
+  #dashboard.page.active .mission-title h2 { font-size: clamp(24px, 2.4vw, 34px); }
+  #dashboard.page.active .mission-title { margin: 0 0 4px; }
+  #dashboard.page.active .mission-card footer { margin-top: 20px; }
+  #dashboard.page.active .mission-card footer .primary { min-width: 180px; }
+  #dashboard.page.active .mission-evidence-action { display: flex; align-items: center; gap: 18px; }
+  #dashboard.page.active .mission-evidence { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; }
+  #dashboard.page.active .mission-evidence h4 { flex: 0 0 auto; margin: 0; }
+  #dashboard.page.active .mission-upload { flex: 1; width: auto; }
+  #dashboard.page.active .mission-evidence-action footer { flex: 0 0 220px; margin: 0; }
+
+  #dashboard.page.active .mission-empty {
+    grid-area: mission;
+    height: auto;
+    min-height: 0;
+    align-self: stretch;
+  }
+  #dashboard.page.active:has(#currentTaskBar) #missionEmpty { display: none; }
+  #dashboard.page.active .dash-bottom { grid-area: queue; display: block; min-height: 0; }
+  #dashboard.page.active .dash-tasks {
+    min-height: 0;
+    height: auto;
+    padding: 18px 22px;
+  }
+  #dashboard.page.active .dash-tasks .panel-head { margin-bottom: 8px; }
+  #dashboard.page.active .dash-tasks .panel-actions #regenerateTasks { display: none; }
+  #dashboard.page.active .dash-side { display: none; }
+  #dashboard.page.active .task-list { max-height: 130px; overflow-y: auto; }
+  #dashboard.page.active .topbar .actions { display: flex; }
+
+  /* Override the older focus-first rules with equal specificity. */
+  #dashboard.page.active:has(#currentTaskBar) .dash-bottom { display: block; }
+  #dashboard.page.active:has(#currentTaskBar) .dash-side { display: none; }
+  body:has(#dashboard.page.active) .topbar .actions { display: flex; }
+  body:has(#dashboard.page.active) .topbar .actions #generate { display: inline-flex; }
+  #dashboard.page.active:not(:has(#currentTaskBar)) .panel-actions #regenerateTasks { display: inline-flex; }
+
+  /* The queue is the "up next" list from the selected reference, not a
+     second set of full task detail cards. */
+  #dashboard.page.active:has(#currentTaskBar) .dash-tasks .panel-head h3 {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .dash-tasks .panel-head h3::after {
+    content: " · 接下来";
+    color: var(--mc-muted);
+    font-weight: 500;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list {
+    display: grid;
+    gap: 6px;
+    max-height: calc(100% - 48px);
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto auto;
+    align-items: center;
+    min-height: 52px;
+    padding: 8px 12px;
+    border: 1px solid var(--mc-border);
+    border-radius: var(--r-md);
+    background: var(--mc-canvas);
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-actions,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .evidence-row,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .evidence-files,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-field,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-apps,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .recall-rating,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .recovery-task,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .goal-ancestry,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .learning-meta,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-body > p,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-meta span,
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-meta br { display: none; }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-body {
+    display: contents;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-accept {
+    grid-column: 4;
+    grid-row: 1;
+    align-self: center;
+    white-space: nowrap;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-title {
+    grid-column: 2;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--mc-text);
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task .task-meta {
+    grid-column: 3;
+    color: var(--mc-muted);
+    font-size: var(--fs-2xs);
+    white-space: nowrap;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task::before {
+    content: attr(data-task-index);
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--mc-border);
+    border-radius: 50%;
+    color: var(--mc-muted);
+    font-size: var(--fs-2xs);
+    font-weight: 700;
+  }
+  #dashboard.page.active:has(#currentTaskBar) .task-list > .task > [data-edit] {
+    display: none;
+  }
+}

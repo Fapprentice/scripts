@@ -225,10 +225,11 @@ def test_failed_projection_rolls_back_the_whole_state_save(tmp_path):
 def test_schema_metadata_records_bootstrap_version_and_migration_history(tmp_path):
     store = SqliteStore(tmp_path, auto_backup=False)
 
-    assert store.schema_version() == 2
+    assert store.schema_version() == 3
     assert store.migration_history() == [
         {"from_version": 0, "to_version": 1, "name": "initial_schema"},
         {"from_version": 1, "to_version": 2, "name": "companion_growth"},
+        {"from_version": 2, "to_version": 3, "name": "skill_prerequisite_kind"},
     ]
 
 
@@ -240,10 +241,11 @@ def test_upgrade_creates_pre_migration_backup_before_recording_upgrade(tmp_path)
 
     upgraded = SqliteStore(tmp_path, auto_backup=False)
 
-    assert upgraded.schema_version() == 2
+    assert upgraded.schema_version() == 3
     assert upgraded.migration_history() == [
         {"from_version": 0, "to_version": 1, "name": "initial_schema"},
         {"from_version": 1, "to_version": 2, "name": "companion_growth"},
+        {"from_version": 2, "to_version": 3, "name": "skill_prerequisite_kind"},
     ]
     assert len(list((tmp_path / "backups" / "pre-migration").glob("*.db"))) == 1
 
@@ -258,8 +260,8 @@ def test_health_report_exposes_schema_and_attachment_integrity(tmp_path):
     report = store.health_report()
 
     assert report["ok"] is False
-    assert report["schema_version"] == 2
-    assert report["target_schema_version"] == 2
+    assert report["schema_version"] == 3
+    assert report["target_schema_version"] == 3
     assert report["attachments"] == [{"sha256": store._hash(source), "problem": "missing"}]
 
 
@@ -328,7 +330,7 @@ def test_v1_upgrade_creates_pre_migration_backup_and_default_companion(tmp_path)
     companion = upgraded.load_companion()
     state = upgraded.load(str(tmp_path / "task-config.json"))
 
-    assert upgraded.schema_version() == 2
+    assert upgraded.schema_version() == 3
     assert any(item["name"] == "companion_growth" for item in upgraded.migration_history())
     assert companion["id"] == "dafeiyu"
     assert companion["name"] == "大肥鱼"
@@ -343,6 +345,26 @@ def test_v1_upgrade_creates_pre_migration_backup_and_default_companion(tmp_path)
         assert database.execute("SELECT COUNT(*) FROM companions").fetchone()[0] == 1
         assert database.execute("SELECT COUNT(*) FROM companion_events").fetchone()[0] == 0
     assert len(list((tmp_path / "backups" / "pre-migration").glob("*.db"))) >= 1
+
+
+def test_skill_prerequisites_project_kind_and_rationale(tmp_path):
+    store = SqliteStore(tmp_path, auto_backup=False)
+    store.save(str(tmp_path / "task-config.json"), {
+        "goal": "英语四级",
+        "goals": [{"id": "g1", "title": "英语四级"}],
+        "user_models_by_goal": {"g1": {"skills": {
+            "cet4.vocab.high_freq": {"prerequisites": []},
+            "cet4.vocab.collocation": {
+                "prerequisites": ["cet4.vocab.high_freq"],
+                "prerequisite_meta": {"cet4.vocab.high_freq": {"kind": "hard", "rationale": "没有词义就无法判断搭配"}},
+            },
+        }}},
+    }, backup=False)
+    with sqlite3.connect(tmp_path / "taskverge.db") as database:
+        row = database.execute(
+            "SELECT kind, rationale FROM skill_prerequisites").fetchone()
+    assert row[0] == "hard"
+    assert "词义" in row[1]
 
 
 def test_companion_survives_projection_and_is_json_snapshot_only(tmp_path):

@@ -69,6 +69,38 @@ def test_missing_material_and_unsupported_key_are_reported_separately():
     assert ("materials_to_key", "answer_support") in failed
 
 
+def test_skill_map_rejects_unknown_and_blocked_skills():
+    artifact = _artifact()
+    artifact["tasks"][0]["skill_id"] = "invented.skill"
+    artifact["skill_map"] = {
+        "coverage": True,
+        "pack_id": "python-intro",
+        "nodes": [{"id": "python.control.loop", "mastery_evidence": {"threshold": "输出可复现"}}],
+        "edges": [],
+        "blocked": ["invented.skill"],
+    }
+    run = evaluation.evaluate_case(_case(), artifact)
+    assert run["decision"] == "fail"
+    assert run["first_failing_stage"] == "skill_map"
+
+
+def test_skill_map_coverage_gap_and_skipped_focus_fail():
+    gap = evaluation.evaluate_case(_case(), {"skill_map": {
+        "coverage": False, "gaps": ["口语"], "pack_id": "cet4",
+        "nodes": [{"id": "cet4.vocab.high_freq", "mastery_evidence": {"threshold": "8/10"}}],
+        "edges": [],
+    }})
+    assert gap["decision"] == "fail"
+    skipped = evaluation.evaluate_case(_case(), {"skill_map": {
+        "coverage": True, "pack_id": "cet4",
+        "focus": {"skill_id": "cet4.listening.short_dialogue"},
+        "nodes": [{"id": "cet4.listening.short_dialogue", "band": "skipped",
+                    "mastery_evidence": {"threshold": "4/5"}}],
+        "edges": [],
+    }})
+    assert skipped["decision"] == "fail"
+
+
 def test_ambiguous_semantic_result_defers_instead_of_passing():
     case = _case(semantic_checks=[{"id": "relevance", "stage": "goal_to_task", "rubric": "任务直接服务目标"}])
     run = evaluation.evaluate_case(case, _artifact(), semantic_judge=lambda *_: {

@@ -1,10 +1,10 @@
 [
   {
     "id": "bench-001",
-    "desc": "No evidence at all — hard fail",
+    "desc": "No evidence with explicit contract — needs review",
     "task": {"title": "Task A", "expected_output": "a file", "acceptance": "file exists", "evidence": []},
     "details": {"text": "", "files": []},
-    "expected_pass": false, "should_need_llm": false
+    "expected_pass": false, "should_need_llm": true
   },
   {
     "id": "bench-002",
@@ -29,24 +29,24 @@
   },
   {
     "id": "bench-005",
-    "desc": "Valid file, keywords match — pass, no LLM needed",
+    "desc": "Valid file, soft rules unresolved — needs LLM",
     "task": {"title": "Task E", "expected_output": "一个Python文件 list_exercises.py", "acceptance": "代码可运行", "evidence": "list_exercises.py"},
-    "details": {"text": "完成了 list_exercises.py", "files": [{"path": "list_exercises.py", "exists": true, "content": "print('list exercises done')", "python_check": {"ok": true, "output": ""}}]},
-    "expected_pass": true, "should_need_llm": false
+    "details": {"text": "完成了 list_exercises.py", "files": [{"path": "list_exercises.py", "exists": true, "content": "print('list exercises done')", "python_check": {"ok": true, "output": ""}, "docker_run": {"ok": true}}]},
+    "expected_pass": false, "should_need_llm": true
   },
   {
     "id": "bench-006",
-    "desc": "Valid file, keywords partial — pass （软规则已标记但不触发LLM）",
+    "desc": "Valid file, soft rules unresolved — needs LLM",
     "task": {"title": "Task F", "expected_output": "业务分析报告", "acceptance": "包含数据可视化", "evidence": "report.md"},
-    "details": {"text": "完成了报告", "files": [{"path": "report.md", "exists": true, "content": "## 业务分析\n\n数据如图所示", "python_check": {"ok": true, "output": ""}}]},
-    "expected_pass": true, "should_need_llm": false
+    "details": {"text": "完成了报告", "files": [{"path": "report.md", "exists": true, "content": "## 业务分析\n\n数据如图所示", "python_check": {"ok": true, "output": ""}, "docker_run": {"ok": true}}]},
+    "expected_pass": false, "should_need_llm": true
   },
   {
     "id": "bench-007",
-    "desc": "Empty expected_output, valid evidence — pass",
+    "desc": "Empty contract, valid evidence — deterministic fail",
     "task": {"title": "Task G", "expected_output": "", "acceptance": "", "evidence": "notes.txt"},
     "details": {"text": "notes", "files": [{"path": "notes.txt", "exists": true, "content": "some notes", "python_check": {}}]},
-    "expected_pass": true, "should_need_llm": false
+    "expected_pass": false, "should_need_llm": false
   },
   {
     "id": "bench-008",
@@ -57,20 +57,20 @@
   },
   {
     "id": "bench-009",
-    "desc": "All checks pass, keywords match — deterministic pass",
+    "desc": "Docker passes but semantic criteria still need LLM",
     "task": {"title": "Task I", "expected_output": "学生成绩管理 脚本 student_grades.py", "acceptance": "运行输出正确", "evidence": "student_grades.py"},
-    "details": {"text": "完成了 学生成绩管理", "files": [{"path": "student_grades.py", "exists": true, "content": "def avg(grades): return sum(grades.values())/len(grades)", "python_check": {"ok": true, "output": ""}, "docker_run": {"skipped": true}}]},
-    "expected_pass": true, "should_need_llm": false
+    "details": {"text": "完成了 学生成绩管理", "files": [{"path": "student_grades.py", "exists": true, "content": "def avg(grades): return sum(grades.values())/len(grades)", "python_check": {"ok": true, "output": ""}, "docker_run": {"ok": true}}]},
+    "expected_pass": false, "should_need_llm": true
   },
   {
     "id": "bench-010",
-    "desc": "Multiple evidence files, all valid — pass",
+    "desc": "Multiple evidence files, semantic criteria need LLM",
     "task": {"title": "Task J", "expected_output": "多个文件", "acceptance": "所有文件可读", "evidence": ["a.py", "b.txt"]},
     "details": {"text": "done", "files": [
-      {"path": "a.py", "exists": true, "content": "x=1", "python_check": {"ok": true, "output": ""}},
+      {"path": "a.py", "exists": true, "content": "x=1", "python_check": {"ok": true, "output": ""}, "docker_run": {"ok": true}},
       {"path": "b.txt", "exists": true, "content": "data"}
     ]},
-    "expected_pass": true, "should_need_llm": false
+    "expected_pass": false, "should_need_llm": true
   },
   {
     "id": "bench-011",
@@ -81,9 +81,9 @@
   },
   {
     "id": "bench-012",
-    "desc": "Docker skipped but py_compile passes — pass",
+    "desc": "Docker skipped — acceptance blocked",
     "task": {"title": "Task L", "expected_output": "script.py", "acceptance": "", "evidence": "script.py"},
     "details": {"text": "done", "files": [{"path": "script.py", "exists": true, "content": "print('ok')", "python_check": {"ok": true, "output": ""}, "docker_run": {"skipped": true}}]},
-    "expected_pass": true, "should_need_llm": false
+    "expected_pass": false, "should_need_llm": false
   }
 ]

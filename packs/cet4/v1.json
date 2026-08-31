@@ -1,0 +1,197 @@
+{
+  "id": "cet4",
+  "version": "v1",
+  "title": "英语四级微主题",
+  "match": [
+    "英语",
+    "四级",
+    "六级",
+    "cet",
+    "ielts",
+    "toefl"
+  ],
+  "sinks": [
+    "cet4.writing.essay",
+    "cet4.reading.inference",
+    "cet4.listening.passage",
+    "cet4.vocab.collocation"
+  ],
+  "nodes": [
+    {
+      "id": "cet4.vocab.high_freq",
+      "title": "高频词汇",
+      "description": "闭卷识别四级高频词的中文释义。",
+      "demonstration": "recall",
+      "mastery_evidence": {
+        "behavior": "闭卷完成词义匹配",
+        "threshold": "至少 8/10 正确",
+        "counterexample": "会猜选项但说不出词义，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.vocab.collocation",
+      "title": "词汇搭配",
+      "description": "在句子中选用正确搭配。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "完成搭配填空并写出理由",
+        "threshold": "至少 8/10 正确且每题有理由",
+        "counterexample": "只选对答案说不出为什么，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.reading.main_idea",
+      "title": "阅读主旨",
+      "description": "概括短文主旨。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "限时读完一篇短文并写出主旨",
+        "threshold": "主旨覆盖全文且未照抄原句",
+        "counterexample": "只翻译首句，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.reading.detail",
+      "title": "阅读细节",
+      "description": "根据文本定位具体信息。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "回答细节题并标出原文依据",
+        "threshold": "至少 4/5 正确且每题有依据",
+        "counterexample": "答案对但找不到原文，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.reading.inference",
+      "title": "阅读推理",
+      "description": "根据文本做可验证推理。",
+      "demonstration": "explain",
+      "mastery_evidence": {
+        "behavior": "写出推理结论和文本依据",
+        "threshold": "结论可被原文支持且写出依据",
+        "counterexample": "只谈观感没有依据，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.listening.short_dialogue",
+      "title": "短对话听力",
+      "description": "抓住短对话中的关键信息。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "听完短对话后作答并记下盲点",
+        "threshold": "至少 4/5 正确并记录一个具体盲点",
+        "counterexample": "只写答案没有盲点，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.listening.passage",
+      "title": "短文听力",
+      "description": "抓住短文层次与要点。",
+      "demonstration": "practice",
+      "mastery_evidence": {
+        "behavior": "听完短文后复述三条要点",
+        "threshold": "三条要点均可对照材料核验",
+        "counterexample": "只记得开头一句，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.writing.outline",
+      "title": "写作提纲",
+      "description": "按题目列出可执行提纲。",
+      "demonstration": "deliverable",
+      "mastery_evidence": {
+        "behavior": "写出含立场和三点理由的提纲",
+        "threshold": "三点理由均可展开成段落",
+        "counterexample": "只有主题句没有理由，不算掌握"
+      }
+    },
+    {
+      "id": "cet4.writing.essay",
+      "title": "限时短文",
+      "description": "不借助翻译工具完成一篇短文。",
+      "demonstration": "deliverable",
+      "mastery_evidence": {
+        "behavior": "限时写出完整短文",
+        "threshold": "不少于 120 词并记录用时",
+        "counterexample": "粘贴生成文本，不算掌握"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "cet4.vocab.high_freq",
+      "to": "cet4.vocab.collocation",
+      "kind": "hard",
+      "rationale": "没有词义就无法判断搭配是否成立。"
+    },
+    {
+      "from": "cet4.reading.main_idea",
+      "to": "cet4.reading.detail",
+      "kind": "hard",
+      "rationale": "先抓住主旨才能判断细节是否相关。"
+    },
+    {
+      "from": "cet4.reading.detail",
+      "to": "cet4.reading.inference",
+      "kind": "hard",
+      "rationale": "推理必须落在已定位的细节上。"
+    },
+    {
+      "from": "cet4.listening.short_dialogue",
+      "to": "cet4.listening.passage",
+      "kind": "hard",
+      "rationale": "短文听力依赖先抓住单轮关键信息。"
+    },
+    {
+      "from": "cet4.writing.outline",
+      "to": "cet4.writing.essay",
+      "kind": "hard",
+      "rationale": "没有提纲的短文无法检查论证结构。"
+    },
+    {
+      "from": "cet4.reading.inference",
+      "to": "cet4.writing.outline",
+      "kind": "soft",
+      "rationale": "论证提纲通常建立在能从材料推出观点之上。"
+    },
+    {
+      "from": "cet4.vocab.collocation",
+      "to": "cet4.writing.essay",
+      "kind": "soft",
+      "rationale": "搭配准确能降低写作表达失败，但不是动笔的硬条件。"
+    }
+  ],
+  "covers": {
+    "听力": [
+      "cet4.listening.passage",
+      "cet4.listening.short_dialogue"
+    ],
+    "阅读": [
+      "cet4.reading.inference",
+      "cet4.reading.detail",
+      "cet4.reading.main_idea"
+    ],
+    "写作": [
+      "cet4.writing.essay",
+      "cet4.writing.outline"
+    ],
+    "词汇": [
+      "cet4.vocab.collocation",
+      "cet4.vocab.high_freq"
+    ]
+  },
+  "skippable": [
+    {
+      "id": "cet4.listening.short_dialogue",
+      "tags": [
+        "听力"
+      ]
+    },
+    {
+      "id": "cet4.listening.passage",
+      "tags": [
+        "听力"
+      ]
+    }
+  ]
+}

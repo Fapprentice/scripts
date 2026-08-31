@@ -82,7 +82,7 @@
    建议：补充 `.env`、`.uploads/`、`dogfood-output/`、审计截图和临时目录。
 
 9. **已弃用上传解析器**  
-   README 已说明 `cgi.FieldStorage` 仍在使用。当前上传规模小，可以暂不动；升级到 Python 3.13 或上传需求扩大时，改为更小的标准库 multipart 解析路径。
+   当前上传实现仍使用 `cgi.FieldStorage`。当前上传规模小，可以暂不动；升级到 Python 3.13 或上传需求扩大时，改为更小的标准库 multipart 解析路径。
 
 ## 5. 建议执行顺序
 

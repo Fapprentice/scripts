@@ -26,7 +26,7 @@ def test_task_service_scores_partial_and_skip_once():
     assert outcomes == ["partial", "skipped"]
 
 
-def test_unready_goal_blocks_plan_replacement_and_task_start():
+def test_manual_tasks_allow_unready_goal_but_preserve_callbacks():
     starts = []
     service = TaskService(text=str, normalize=lambda tasks, goal, flags: [dict(t) for t in tasks],
         goal_id=lambda state: "g1", sync_pct=lambda state: None, save=lambda state: None,
@@ -34,9 +34,7 @@ def test_unready_goal_blocks_plan_replacement_and_task_start():
         readiness=lambda state: {"ready": state.get("ready", False)},
         first_task_started=lambda state, task, idx: starts.append((task["id"], idx)))
     state = {"tasks": [{"id": "one", "status": "pending"}], "done_flags": [False]}
-    assert service.replace(state, [{"title": "replacement"}], "reason") == (False, "请先补全目标契约")
-    assert service.set_status(state, 0, "doing") == (False, "请先补全目标契约")
-    state["ready"] = True
+    assert service.replace(state, [{"id": "one", "title": "replacement"}], "reason") == (True, "ok")
     assert service.set_status(state, 0, "doing")[0] is True
     assert starts == [("one", 0)]
 

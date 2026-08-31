@@ -83,7 +83,7 @@ def _r3_py_compile(task, details):
 
 
 def _r4_docker_run(task, details):
-    """R4: If Docker is available, .py files must pass sandbox execution."""
+    """R4: Python evidence must include a successful sandbox execution."""
     files = details.get("files", [])
     py_files = [f for f in files if f.get("path", "").lower().endswith(".py")]
     if not py_files:
@@ -91,9 +91,8 @@ def _r4_docker_run(task, details):
     failures = []
     for f in py_files:
         dr = f.get("docker_run", {})
-        # skipped means Docker wasn't available — that's ok
-        if dr.get("skipped"):
-            continue
+        if not dr or dr.get("skipped"):
+            return RuleResult(False, "Docker 沙箱不可用或未运行，验收被阻断")
         if dr and not dr.get("ok"):
             failures.append(f"{f.get('path','?')}: {dr.get('stderr','?')[:120]}")
     if failures:
@@ -127,9 +126,9 @@ def _r5_output_keywords(task, details):
     if len(matched) >= len(keywords) * 0.5:
         return RuleResult(True, f"关键词匹配: {len(matched)}/{len(keywords)}")
     elif len(matched) > 0:
-        return RuleResult(True, f"部分关键词匹配 ({len(matched)}/{len(keywords)})，需 LLM 确认")
+        return RuleResult(False, f"部分关键词匹配 ({len(matched)}/{len(keywords)})，需 LLM 确认")
     else:
-        return RuleResult(True, "无关键词匹配，需 LLM 语义判断")
+        return RuleResult(False, "无关键词匹配，需 LLM 语义判断")
 
 
 def _r6_acceptance_criteria(task, details):
@@ -155,14 +154,16 @@ def _r6_acceptance_criteria(task, details):
 
     if len(matched) >= len(keywords) * 0.4:
         return RuleResult(True, f"验收关键词匹配: {len(matched)}/{len(keywords)}")
-    return RuleResult(True, "验收标准需 LLM 判断")
+    return RuleResult(False, "验收标准需 LLM 判断")
 
 
 # Ordered list of (rule_id, rule_fn, is_hard)
 # Hard rules → FAIL immediately. Soft rules → flag needs_llm.
 _RULES = [
     ("R0_material_answers", _r0_material_answers, True),
-    ("R1_evidence",     _r1_has_evidence,      True),
+    # Missing evidence is an ambiguous submission state: route to human review
+    # rather than treating an otherwise potentially valid task as a hard failure.
+    ("R1_evidence",     _r1_has_evidence,      False),
     ("R2_files_exist",  _r2_files_exist,        True),
     ("R3_py_compile",   _r3_py_compile,         True),
     ("R4_docker_run",   _r4_docker_run,         True),
@@ -191,6 +192,10 @@ def check_evidence(task, details):
     if objective:
         result = _r0_material_answers(task, details)
         return AcceptanceVerdict(result.pass_, result.detail, {"R0_material_answers":{"pass":result.pass_,"detail":result.detail}}, False)
+    # Tasks without any expected output or acceptance contract cannot be
+    # accepted deterministically, even when evidence is present.
+    if not str(task.get("expected_output") or "").strip() and not str(task.get("acceptance") or "").strip():
+        return AcceptanceVerdict(False, "任务缺少预期产出和验收标准", {"R_contract": {"pass": False, "detail": "任务缺少预期产出和验收标准"}}, False)
     if task.get("materials") and task.get("response"):
         return AcceptanceVerdict(True, "页面作答已提交，需 AI 按题目要求验收", {}, True)
     checks = {}
@@ -221,7 +226,7 @@ def check_evidence(task, details):
         return AcceptanceVerdict(False, reason, checks, False)
 
     if needs_llm:
-        return AcceptanceVerdict(True, "确定性规则通过，需 LLM 语义判断", checks, True)
+        return AcceptanceVerdict(False, "确定性规则无法独立放行，需 LLM 语义判断", checks, True)
 
     return AcceptanceVerdict(True, "所有确定性检查通过", checks, False)
 
@@ -497,4 +502,3 @@ def build_remediation_task(task, result, now=None):
         "required_apps": list(task.get("required_apps") or []),
         "allowed_apps": list(task.get("allowed_apps") or []),
     }
-

@@ -24,7 +24,7 @@ DEFAULT_THRESHOLDS = {
     "acceptance_flip_rate": 0.0,
     "task_set_overlap": 0.8,
 }
-STAGES = ("goal_quality", "goal_to_task", "task_to_materials", "materials_to_key", "evidence_to_acceptance")
+STAGES = ("goal_quality", "goal_to_task", "task_to_materials", "materials_to_key", "evidence_to_acceptance", "skill_map")
 
 
 def criterion_records(criteria):
@@ -127,6 +127,41 @@ def _material_scores(artifact, metrics):
     ]
 
 
+def _skill_map_scores(case, artifact, metrics):
+    skill_map = artifact.get("skill_map") or case.get("skill_map") or {}
+    if not skill_map or not (skill_map.get("nodes") or skill_map.get("pack_id")):
+        return []
+    nodes = [x for x in skill_map.get("nodes", []) if isinstance(x, dict)]
+    edges = [x for x in skill_map.get("edges", []) if isinstance(x, dict)]
+    tasks = [x for x in artifact.get("tasks", []) if isinstance(x, dict)]
+    known = {str(node.get("id") or "") for node in nodes}
+    missing_contract = [node.get("id") for node in nodes if not (node.get("mastery_evidence") or {}).get("threshold")]
+    unknown = [task.get("skill_id") for task in tasks if task.get("skill_id") and str(task.get("skill_id")) not in known]
+    blocked = [task.get("skill_id") for task in tasks if task.get("skill_id") and str(task.get("skill_id")) in set(skill_map.get("blocked") or [])]
+    metrics["unknown_skill_ids"] = unknown
+    metrics["blocked_skill_ids"] = blocked
+    coverage = bool(skill_map.get("coverage", True)) and not skill_map.get("gaps")
+    skipped = [node.get("id") for node in nodes if node.get("band") == "skipped"]
+    focus = (skill_map.get("focus") or {}).get("skill_id")
+    skip_ok = not (focus and focus in skipped)
+    return [
+        _score("skill_map", "map_coverage", coverage, int(coverage),
+               "技能地图覆盖最终成果" if coverage else "技能地图未覆盖最终成果"),
+        _score("skill_map", "node_contract", not missing_contract, int(not missing_contract),
+               "节点均有掌握证据" if not missing_contract else "缺少掌握证据: " + ", ".join(map(str, missing_contract))),
+        _score("skill_map", "task_skill_anchor", not unknown, int(not unknown),
+               "学习任务均锚定技能地图" if not unknown else "未知技能: " + ", ".join(map(str, unknown))),
+        _score("skill_map", "hard_unlock", not blocked, int(not blocked),
+               "未生成未解锁节点" if not blocked else "未解锁: " + ", ".join(map(str, blocked))),
+        _score("skill_map", "baseline_skip", skip_ok, int(skip_ok),
+               "焦点不落在已跳过节点" if skip_ok else "焦点落在已跳过节点"),
+        _score("skill_map", "standard_hold", not skill_map.get("lowered_standard"), int(not skill_map.get("lowered_standard")),
+               "反馈未降低成功标准" if not skill_map.get("lowered_standard") else "反馈降低了成功标准"),
+        _score("skill_map", "proposal_lock", not skill_map.get("proposal_error"), int(not skill_map.get("proposal_error")),
+               "提案锁定 pack 版本" if not skill_map.get("proposal_error") else "提案未锁定 pack 版本: " + str(skill_map.get("proposal_error"))),
+    ]
+
+
 def _acceptance_scores(case, artifact, metrics):
     criteria = _ids(case.get("goal", {}).get("success_criteria", []))
     evidence = [x for x in artifact.get("evidence", []) if isinstance(x, dict)]
@@ -187,6 +222,7 @@ def evaluate_case(case, artifact, semantic_judge=None):
     metrics = {}
     scores = (_goal_scores(case, metrics) + _goal_task_scores(case, artifact, metrics) +
               _material_scores(artifact, metrics) + _acceptance_scores(case, artifact, metrics) +
+              _skill_map_scores(case, artifact, metrics) +
               _semantic_scores(case, artifact, semantic_judge))
     uncertain = any(x.get("uncertainty", 0) >= 0.25 for x in scores)
     critical = [x for x in scores if x["critical"] and not x["pass"]]
@@ -204,7 +240,8 @@ def evaluate_generation(case, artifact, semantic_judge=None):
     """Gate a generated plan before user evidence exists."""
     metrics = {}
     scores = (_goal_scores(case, metrics) + _goal_task_scores(case, artifact, metrics) +
-              _material_scores(artifact, metrics) + _semantic_scores(case, artifact, semantic_judge))
+              _material_scores(artifact, metrics) + _skill_map_scores(case, artifact, metrics) +
+              _semantic_scores(case, artifact, semantic_judge))
     uncertain = any(x.get("uncertainty", 0) >= 0.25 for x in scores)
     failed = any(x["critical"] and not x["pass"] for x in scores)
     decision = "needs_review" if uncertain else "fail" if failed else "pass"

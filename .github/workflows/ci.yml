@@ -19,9 +19,12 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Check syntax and lint
         run: |
-          python -m py_compile task-panel.pyw learning.py acceptance.py evaluation.py
+          Get-ChildItem task-panel.pyw,*.py,tests -Recurse -File |
+            Where-Object { $_.FullName -notmatch '\\(__pycache__|\.pytest_cache)\\' } |
+            ForEach-Object { python -m py_compile $_.FullName }
+          node --check web/app.js
           python -m ruff check --select E9,F63,F7,F82 --output-format=github .
-      - name: Run AI quality release gate
+      - name: Run deterministic regression gate
         run: |
           python evaluation.py --run
           python evaluation.py --calibrate evals/calibration.json
@@ -50,7 +53,8 @@ jobs:
         shell: powershell
         run: |
           if (-not (Test-Path dist\TaskVerge\TaskVerge.exe)) { throw "TaskVerge.exe was not built" }
-          if (-not (Test-Path task-verge-portable-v0.2.0-win-x64.zip)) { throw "Portable ZIP was not built" }
+          $version = (Get-Content VERSION -Raw).Trim()
+          if (-not (Test-Path "task-verge-portable-v$version-win-x64.zip")) { throw "Portable ZIP was not built" }
 
   e2e:
     runs-on: windows-latest
@@ -110,7 +114,7 @@ jobs:
           "TASKVERGE_TEST_URL=$url" | Add-Content $env:GITHUB_ENV
       - name: Run browser E2E tests
         run: >-
-          python -m pytest tests/test_e2e_main_flow.py tests/test_ui_full_flow.py
+          python -m pytest tests/test_e2e_main_flow.py tests/test_e2e_regressions.py tests/test_ui_full_flow.py
           -v --timeout=180
       - name: Upload E2E diagnostics on failure
         if: failure()

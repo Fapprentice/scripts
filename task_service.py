@@ -18,7 +18,6 @@ class TaskService:
         tasks = self.normalize(state.get("tasks", []), self.goal_id(state), state.get("done_flags", []))
         if idx < 0 or idx >= len(tasks): return False, "task index out of range"
         if status not in ("pending", "doing", "paused", "partial", "skipped"): return False, "invalid task status"
-        if status == "doing" and not self._ready(state): return False, "请先补全目标契约"
         self.undo(state, "task state")
         task = tasks[idx]
         previous_status = task.get("status")
@@ -44,7 +43,6 @@ class TaskService:
 
     def replace(self, state, raw_tasks, reason=""):
         if not isinstance(raw_tasks, list) or not any(self.text(x) for x in raw_tasks): return False, "task list cannot be empty"
-        if not self._ready(state): return False, "请先补全目标契约"
         if state.get("plan_locked") and not self.text(reason): return False, "plan is locked; provide a reason"
         state["tasks"] = self.normalize(raw_tasks, self.goal_id(state), state.get("done_flags", []))
         flags = state.get("done_flags", []); state["done_flags"] = flags[:len(state["tasks"])] + [False] * max(0, len(state["tasks"]) - len(flags))

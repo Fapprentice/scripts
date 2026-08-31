@@ -1,9 +1,14 @@
 #!/usr/bin/env python3 -W ignore::DeprecationWarning
 """Task Verge desktop application."""
-import copy, csv, hashlib, json, os, re, sys, time, struct, socket, random, atexit, warnings, shutil
+import copy, csv, hashlib, json, os, re, sys, time, struct, socket, random, atexit, warnings, shutil, uuid
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import subprocess, threading, urllib.request, urllib.error, urllib.parse, tempfile, traceback, ctypes
 import http.server, mimetypes, webbrowser
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _version_file:
+        APP_VERSION = _version_file.read().strip() or "0.2.0"
+except OSError:
+    APP_VERSION = "0.2.0"
 from email import policy as email_policy
 from email.parser import BytesParser
 from datetime import datetime, date
@@ -22,6 +27,8 @@ import applog as _APPLOG
 import apprules as _APPRULES
 import secretstore as _SECRETSTORE
 from runtime import JobRunner, BoundedHTTPServer
+from generation import Generation
+from application import ServiceContext, build_services
 from state_store import JsonStore, open_store
 from task_service import TaskService
 from agent_service import AgentService
@@ -402,14 +409,23 @@ def task_payload(tasks, flags=None):
     return [{"index": i, "title": t.get("title", ""), "status": t.get("status", "pending"),
              "done": task_done(t, (flags or [])[i] if i < len(flags or []) else False),
              "criterion_ids": t.get("criterion_ids", []),
-             "expected_output": t.get("expected_output", ""), "acceptance": t.get("acceptance", "")}
+             "expected_output": t.get("expected_output", ""), "acceptance": t.get("acceptance", ""),
+             "hint_ladder": t.get("hint_ladder", []), "teach_back_prompt": t.get("teach_back_prompt", ""),
+             "independent_check": t.get("independent_check", ""), "transfer_prompt": t.get("transfer_prompt", "")}
             for i, t in enumerate(normalize_tasks(tasks, "", flags or []))]
 
 def insights_for(c):
     tasks = normalize_tasks(c.get("tasks", []), gid(c), c.get("done_flags", []))
     done = sum(1 for t in tasks if t.get("status") == "done")
-    return {"alerts": [], "stats": {"completion_pct": round(done * 100 / len(tasks)) if tasks else 0,
-            "task_done": done, "task_total": len(tasks), "top_apps": []}, "suggestions": []}
+    failed = [t for t in tasks if (t.get("acceptance_result") or {}).get("status") == "failed"]
+    top_apps = [{"app": app, "seconds": seconds} for app, seconds in sorted(lf().items(), key=lambda item: -item[1])[:5]]
+    suggestions = []
+    if failed: suggestions.append("先从验收失败任务的最小补救步骤开始。")
+    elif tasks and done < len(tasks): suggestions.append("先完成当前未完成任务的下一步可验证动作。")
+    return {"alerts": [{"type": "acceptance_failed", "count": len(failed)}] if failed else [],
+            "stats": {"completion_pct": round(done * 100 / len(tasks)) if tasks else 0,
+                      "task_done": done, "task_total": len(tasks), "top_apps": top_apps},
+            "suggestions": suggestions}
 
 def push_coach_alerts(c):
     return []
@@ -538,16 +554,23 @@ def save_diagnostic_plan(c, tasks, mode="diagnostic"):
     c["tasks"]=completed+fresh; c["done_flags"]=[True]*len(completed)+[False]*len(fresh)
     sync_pct(c); c["plan_locked"]=True
     profile=adaptive.ability_profile(c,c.get("goal",""))
+    strategy={"skill_map":"按技能地图已解锁节点生成今日学习任务。",
+              "map_patch":"先补齐能推出最终成果的技能地图，再生成学习任务。"}.get(mode, "先完成能力诊断，再按薄弱项分配学习任务。")
     c["task_generation"]={"ts":datetime.now().isoformat(),"goal_analysis":{"intent":c.get("goal","")},
                           "milestones":[],"progress_diagnosis":{"ability_profile":profile},
-                          "daily_strategy":"先完成能力诊断，再按薄弱项分配学习任务。"}
+                          "daily_strategy":strategy}
     save_goal_state(c); evlog(c,"ability_diagnostic","generated initial diagnostic plan",profile); sc(c)
     gen_status("完成","已生成 {} 个能力诊断任务".format(len(fresh)),mode=mode)
     return "OK {} diagnostic tasks".format(len(fresh))
 
 def ensure_ability_dimensions(c):
     goal=c.get("goal","")
-    signature=json.dumps({"goal":goal,"details":goal_details(c)},sort_keys=True,ensure_ascii=False)
+    details=goal_details(c)
+    if adaptive.is_learning_goal(goal, details):
+        skill_map=adaptive.SkillMap.load(c, details)
+        if skill_map.ok:
+            return []
+    signature=json.dumps({"goal":goal,"details":details},sort_keys=True,ensure_ascii=False)
     model=c.setdefault("user_model",{})
     stored=adaptive.normalize_diagnostic_dimensions(model.get("ability_dimensions",[]),goal)
     source=model.get("ability_dimensions_source","")
@@ -594,9 +617,10 @@ def build_task_prompt(c):
         "recent_feedback": c.get("feedback_history", [])[-10:],
         "learning_focus": adaptive.learning_focus(c),
         "ability_profile": adaptive.ability_profile(c, c.get("goal", "")),
+        "skill_map": adaptive.knowledge_graph(c),
         "learning_policy": {
-            "sequence": ["diagnostic", "recall", "practice", "explain", "transfer"],
-            "rule": "If mastery is unknown, generate a diagnostic task first. Every task that refers to questions, source text, data, code, cases or other inputs must include those inputs in materials; never ask the user to find them.",
+            "sequence": ["map_coverage", "unlocked_focus", "node_contract"],
+            "rule": "Learning tasks must use skill_id values from the skill map. Do not invent ids. Do not generate a task whose hard prerequisites are unmet. Task acceptance must be at least as strong as the node mastery evidence. Every task that refers to questions, source text, data, code, cases or other inputs must include those inputs in materials; never ask the user to find them.",
         },
         "unfinished_tasks": task_payload(unfinished_items),
         "history": lh()[-5:], "settings": settings,
@@ -608,6 +632,8 @@ def build_task_prompt(c):
                              "estimated_minutes": 30, "expected_output": "", "acceptance": "", "required_apps": [],
                              "allowed_apps": [], "depends_on": [], "skill_id": "", "prerequisites": [],
                              "learning_task_type": "recall", "materials": [{"type":"question|passage|audio_script|prompt|data|code","title":"","content":"","prompt":"","options":[],"answer":""}],
+                             "hint_ladder": ["先给方向，不直接给答案"], "teach_back_prompt": "请用自己的话解释你做了什么",
+                             "independent_check": "不看提示独立检查结果", "transfer_prompt": "把方法迁移到一个相近问题",
                              "interaction": {"type":"choice|text","min_score":0.7}}]},
     }
     return settings, json.dumps(prompt, ensure_ascii=False)
@@ -633,6 +659,9 @@ def validate_ai_tasks(goal, tasks, settings, criterion_ids=()):
                                    "material_ids": [material["id"]], "answer": material["answer"]}
                                   for index, material in enumerate(item.get("materials", []), 1)
                                   if material.get("answer") not in (None, "")]
+        pack = adaptive.match_pack({"outcome": goal, "success_criteria": [goal]})
+        if pack and item.get("skill_id") and not adaptive.task_in_map(adaptive.SkillMap({"user_model": {}}, pack=pack, ok=True), item):
+            continue
         semantic_key = adaptive.task_semantic_key(item)
         if semantic_key and semantic_key in semantic_seen: continue
         item["source"] = "ai"
@@ -650,8 +679,11 @@ def generation_eval(c, tasks):
     case = {"id":"live-generation", "version":1, "goal":{"id":gid(c),
             "final_outcome":details.get("outcome"), "success_criteria":criteria,
             "constraints":details.get("constraints", [])}}
-    return _EVALUATION_MOD.evaluate_generation(case, {"tasks":tasks,
-            "metadata":{"model":"deepseek", "prompt_version":"task-generation-v2"}})
+    artifact={"tasks":tasks, "metadata":{"model":"deepseek", "prompt_version":"task-generation-v2"}}
+    graph=adaptive.knowledge_graph(c)
+    if graph.get("pack_id") or graph.get("nodes"):
+        artifact["skill_map"]=graph
+    return _EVALUATION_MOD.evaluate_generation(case, artifact)
 
 def fit_task_budget(tasks, settings):
     budget=max(5, int(settings.get("available_minutes", 120) or 120))
@@ -714,8 +746,15 @@ def gen_tasks():
     gen_status("读取目标")
     g = c.get("goal","")
     if not g: gen_status("完成","没有目标"); return "SKIP no goal"
-    ensure_ability_dimensions(c)
+    details=goal_details(c)
     settings=effective_gen_settings(c)
+    if adaptive.is_learning_goal(g, details):
+        planned=adaptive.plan_learning_tasks(c,g,details,settings.get("task_count",3))
+        if planned:
+            mode="map_patch" if planned[0].get("source")=="map_patch" else "skill_map"
+            gen_status("读取技能地图","按已解锁节点生成今日学习任务" if mode=="skill_map" else "技能地图未覆盖，先补图")
+            return save_diagnostic_plan(c,planned,mode)
+    ensure_ability_dimensions(c)
     diagnostics=adaptive.initial_diagnostic_tasks(c,g,settings.get("task_count",3))
     if diagnostics: return save_diagnostic_plan(c,diagnostics)
     gen_status("读取 DeepSeek Key")
@@ -725,7 +764,7 @@ def gen_tasks():
     settings, prompt = build_task_prompt(c)
     gen_status("请求 AI","生成目标分析和今日任务")
     result = deepseek_json([
-        {"role":"system","content":"你是严格的个人执行计划生成器。只返回紧凑 JSON。不要输出 Markdown。任务必须直接服务当前目标，必须可验收。"},
+        {"role":"system","content":"你是严格的个人执行计划生成器，也是主动学习教练。只返回紧凑 JSON，不要输出 Markdown。任务必须直接服务当前目标，必须可验收。每个学习任务都要提供由浅入深的 hint_ladder（不直接泄露答案）、teach_back_prompt（让用户用自己的话解释）、independent_check（不看提示的独立检查）和 transfer_prompt（迁移到相近问题）；优先让用户自己完成，不替用户作答。"},
         {"role":"user","content":prompt}],1800,0.25,35,1)
     gen_status("解析结果")
     if not isinstance(result,dict): raise AIError("bad_response","AI result must be a JSON object")
@@ -800,6 +839,12 @@ def gen_tasks():
 def fallback_tasks(c, why):
     g=c.get("goal","目标") or "目标"; s=effective_gen_settings(c); goal_id=gid(c)
     criterion_ids=[x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
+    details=goal_details(c)
+    if adaptive.is_learning_goal(g, details):
+        planned=adaptive.plan_learning_tasks(c,g,details,s.get("task_count",3))
+        if planned:
+            mode="map_patch" if planned[0].get("source")=="map_patch" else "fallback"
+            return save_diagnostic_plan(c,planned,mode)
     diagnostics=adaptive.initial_diagnostic_tasks(c,g,s.get("task_count",3))
     if diagnostics: return save_diagnostic_plan(c,diagnostics,"fallback")
     existing=normalize_tasks(c.get("tasks",[]), goal_id, c.get("done_flags",[]))
@@ -846,9 +891,12 @@ def evaluate_task(task_idx):
     c=ensure_goal_state(lc()); items=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
     if task_idx<0 or task_idx>=len(items): raise ValueError("任务索引越界")
     task=items[task_idx]; evidence=as_list(task.get("evidence")); response=task.get("response"); cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled",True))
-    if task.get("skill_id") and not task.get("recall_rating"):
+    if adaptive.requires_recall_rating(task, c) and not task.get("recall_rating"):
         raise ValueError("请先选择回忆质量：忘记、困难、正常或轻松")
-    if not evidence and not response and task.get("verification_mode")!="none":
+    if task.get("skill_id") and not adaptive.task_is_unlocked(c, task):
+        result=norm_acceptance_result({"pass":False,"reason":"硬先修未掌握，不能验收通过该技能节点",
+            "missing":["硬先修"],"next_steps":["先完成硬先修再验收"]})
+    elif not evidence and not response and task.get("verification_mode")!="none":
         result=norm_acceptance_result({"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验证据"],"next_steps":["上传交付物后重新验收"]})
     else:
         details=evidence_details(evidence,response); verdict=_ACCEPTANCE_MOD.check_evidence(task,details)
@@ -872,130 +920,19 @@ def evaluate_task(task_idx):
 
 def cli_eval():
     c = ensure_goal_state(lc())
-    cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled", True))
-    if not cloud_enabled and not _ACCEPTANCE_MOD:
-        return print("FAIL cloud ai disabled (evaluate)")
-    items=normalize_tasks(c.get("tasks",[]), gid(c), c.get("done_flags",[]))
-    if not items: return print("SKIP no tasks")
-    no_evidence=[not as_list(t.get("evidence")) and not t.get("response") and t.get("verification_mode") != "none" for t in items]
-    if all(no_evidence):
-        results=[norm_acceptance_result({"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验说明"],"next_steps":["上传交付物后重新点击 AI 验收"]}) for _ in items]
-        ah({"date":today(),"goal":c.get("goal",""),"goal_id":gid(c),"tasks":items,"completion_pct":0,"summary":"未提交交付物或证据，AI 未放行","acceptance_results":results})
-        c["tasks"]=items; c["done_flags"]=[False]*len(items); c["completion_pct"]=0
-        for i,t in enumerate(c["tasks"]): t["status"]="pending"; t["acceptance_result"]=results[i]; reset_task_timer(t)
-        save_goal_state(c); sc(c); return print("OK 0%")
-    k = dk()
-    today_s = date.today().isoformat()
-    fg = lf()
-    details=[evidence_details(t.get("evidence",[]) if isinstance(t.get("evidence"), list) else t.get("evidence",""),t.get("response")) for t in items]
-    fg_top=dict(sorted(fg.items(),key=lambda x:-x[1])[:12])
-    cloud_fg=fg_top if c.get("privacy",{}).get("share_foreground_with_ai",False) else {}
-
-    # ---- Rules-first path (if enabled) ----
-    if _ACCEPTANCE_MOD:
-        results = []
-        done = []
-        any_needs_llm = False
-        for i, t in enumerate(items):
-            verdict = _ACCEPTANCE_MOD.check_evidence(t, details[i])
-            ar = _ACCEPTANCE_MOD.verdict_to_acceptance_result(verdict)
-            results.append(ar)
-            done.append(verdict.pass_ and not verdict.needs_llm)
-            if verdict.needs_llm:
-                any_needs_llm = True
-
-        # If any task needs LLM judgment, call it per-task
-        if any_needs_llm and cloud_enabled and valid_deepseek_key(k):
-            for i, t in enumerate(items):
-                if results[i].get("needs_llm"):
-                    try:
-                        llm_result = _ACCEPTANCE_MOD.run_llm_eval(
-                            t, details[i], cloud_fg,
-                            lambda msgs, mt, temp, to, retries: deepseek_json(msgs, mt, temp, to, retries))
-                        results[i]["pass"] = llm_result.get("pass", False)
-                        results[i]["reason"] = llm_result.get("reason", results[i]["reason"])
-                        results[i]["missing"] = llm_result.get("missing", [])
-                        results[i]["next_steps"] = llm_result.get("next_steps", [])
-                        results[i]["evidence_refs"] = llm_result.get("evidence_refs", [])
-                        done[i] = results[i]["pass"]
-                    except Exception as e:
-                        results[i]["reason"] += f" (LLM 调用失败: {e})"
-                        results[i]["needs_llm"] = False
-                        done[i] = results[i]["pass"]
-
-        # Apply no-evidence overrides (unchanged from original logic)
-        for i, missing in enumerate(no_evidence):
-            if missing and items[i].get("verification_mode") != "none":
-                done[i] = False
-                results[i] = {"pass": False, "reason": "未提交交付物或证据", "missing": ["交付物文件或可核验证据"],
-                    "next_steps": ["上传交付物后重新验收"], "evidence_refs": [],
-                    "checks": {}, "needs_llm": False, "overridden": False, "override_reason": "", "rules_first": True}
-
-        c["tasks"] = items
-        basis = {"ts": datetime.now().isoformat(), "model": "rules-first+deepseek-chat",
-            "foreground_time": fg_top, "evidence": compact_evidence_basis(details), "raw_result": {}}
-
-        graded=[norm_acceptance_result(results[i] if i < len(results) else {}) for i in range(len(items))]
-        c["done_flags"] = [ar["decision"]=="accepted" for ar in graded]
-        for i, t in enumerate(c["tasks"]):
-            t["status"] = "done" if c["done_flags"][i] else "pending"
-            adaptive.record_task_outcome(t,c["done_flags"][i])
-            reset_task_timer(t)
-            ar = graded[i]
-            ar["basis"] = {"foreground_time": fg_top, "evidence": basis["evidence"][i] if i < len(basis["evidence"]) else {}}
-            ar.setdefault("rules_first", True)
-            t["acceptance_result"] = ar
-            if t.get("skill_id") and t.get("recall_rating") and ar.get("decision") in ("accepted","rejected"):
-                adaptive.record_learning_outcome(c,t,c["done_flags"][i])
-        sync_pct(c); pct = c.get("completion_pct", 0)
-        c["last_acceptance"] = basis
-        ah({"date": today_s, "goal": c.get("goal", ""), "goal_id": gid(c), "tasks": items,
-            "completion_pct": pct, "summary": "规则优先验收完成",
-            "acceptance_results": [t.get("acceptance_result", {}) for t in c["tasks"]], "basis": basis})
-        save_goal_state(c)
-        sc(c)
-        print("OK {}% (rules-first)".format(pct))
-        return
-
-    # ---- Original LLM-only path (fallback when rules-first is disabled) ----
-    payload={"goal":c.get("goal",""),"tasks":[{"title":t.get("title",""),"description":t.get("description",""),"expected_output":t.get("expected_output",""),"acceptance":t.get("acceptance",""),"required_apps":t.get("required_apps",[]),"allowed_apps":t.get("allowed_apps",[]),"evidence":as_list(t.get("evidence","")),"evidence_details":details[i]} for i,t in enumerate(items)],
-        "foreground_time":cloud_fg}
-    schema='{"completion_pct":80,"done":[true,false,true],"results":[{"pass":true,"reason":"short verdict","missing":["what is missing"],"next_steps":["what user should upload or fix"],"evidence_refs":["file.py: stdout line or code fact"]}],"summary":"text"}'
-    prompt=json.dumps(payload,ensure_ascii=False)+"\nReturn JSON only: "+schema
-    result = deepseek_json([{"role":"system","content":"你是严格的任务验收审计员，不是任务生成器。默认怀疑，只有证据满足 expected_output 和 acceptance 才通过。根据交付物、读取到的文件内容、Docker/Python 检查结果、必要应用使用证据判断。没有证据不得通过；文件不存在不得通过；Python 文件 py_compile 或 Docker 执行失败不得通过；只用前台时间不能通过。每个 result 必须包含 pass、reason、missing、next_steps、evidence_refs。只返回 JSON。"},{"role":"user","content":prompt}],2200,0.1,35,1)
-    pct = result.get("completion_pct",0)
-    done = result.get("done",[])
-    results = result.get("results",[])
-    for i,missing in enumerate(no_evidence):
-        if missing:
-            if i < len(done): done[i]=False
-            while len(results)<=i: results.append({})
-            results[i]={"pass":False,"reason":"未提交交付物或证据","missing":["交付物文件或可核验证据"],"next_steps":["上传交付物后重新验收"],"evidence_refs":[]}
-    for i,d in enumerate(details):
-        bad=next((f for f in d.get("files",[]) if not f.get("exists") or f.get("python_check",{}).get("ok") is False or f.get("docker_run",{}).get("ok") is False), None)
-        if bad:
-            if i < len(done): done[i]=False
-            while len(results)<=i: results.append({})
-            results[i]={"pass":False,"reason":"交付物文件不存在、Python 静态检查失败或 Docker 执行失败","missing":["可通过检查的交付物"],"next_steps":["修复文件路径、语法错误或运行错误后重新上传"],"evidence_refs":[bad.get("path","")]}
-    c["tasks"] = items
-    basis={"ts":datetime.now().isoformat(),"model":"deepseek-chat","foreground_time":fg_top,"evidence":compact_evidence_basis(details),"raw_result":result}
-    graded=[norm_acceptance_result(results[i] if i < len(results) else {}) for i in range(len(items))]
-    c["done_flags"]=[ar["decision"]=="accepted" for ar in graded]
-    for i,t in enumerate(c["tasks"]):
-        t["status"]="done" if c["done_flags"][i] else "pending"
-        adaptive.record_task_outcome(t,c["done_flags"][i])
-        reset_task_timer(t)
-        ar=graded[i]
-        ar["basis"]={"foreground_time":fg_top,"evidence":basis["evidence"][i] if i < len(basis["evidence"]) else {}}
-        t["acceptance_result"]=ar
-        if t.get("skill_id") and t.get("recall_rating") and ar.get("decision") in ("accepted","rejected"):
-            adaptive.record_learning_outcome(c,t,c["done_flags"][i])
-    sync_pct(c); pct=c.get("completion_pct",0)
-    c["last_acceptance"]=basis
-    ah({"date":today_s,"goal":c.get("goal",""),"goal_id":gid(c),"tasks":items,"completion_pct":pct,"summary":result.get("summary",""),"acceptance_results":[t.get("acceptance_result",{}) for t in c["tasks"]],"basis":basis})
-    save_goal_state(c)
-    sc(c)
-    print("OK {}%".format(pct))
+    items = normalize_tasks(c.get("tasks", []), gid(c), c.get("done_flags", []))
+    if not items:
+        print("SKIP no tasks")
+        return []
+    results = []
+    for i in range(len(items)):
+        try:
+            results.append(evaluate_task(i))
+        except (TypeError, ValueError, AIError) as e:
+            results.append({"ok": False, "idx": i, "message": str(e)})
+    passed = sum(1 for result in results if result.get("pass"))
+    print("OK {}/{} tasks passed".format(passed, len(results)))
+    return results
 
 def ensure_time_blocks(c, force=False):
     ensure_goal_state(c)
@@ -1019,7 +956,7 @@ def ensure_time_blocks(c, force=False):
         cur+=dur+5; since_break+=dur
     c["time_blocks"]=out; return out
 
-def cli_stats():
+def cli_stats(send=False):
     def r(cmd):
         try: r = _run(cmd, timeout=10); return r.stdout.strip()
         except: return ""
@@ -1048,6 +985,9 @@ def cli_stats():
     o = r(["powershell","-NoProfile","-Command","Get-Counter '\\Thermal Zone Information(*)\\Temperature' -ErrorAction SilentlyContinue | Select -Expand CounterSamples | Select -Expand CookedValue"])
     temps=[float(x) for x in o.split() if x.replace(".","").replace("-","").isdigit() and float(x)>280]
     if temps: s["cpu_temp_c"]=round(min(temps)-273.15,1)
+    if not send:
+        print("[pc-stats] collected locally; use --send-stats to upload")
+        return
     s["agent"]="hermes-cron"; token=pt()
     try:
         resp=urllib.request.urlopen(urllib.request.Request("https://www.lianyue.fun/api/pc-stats",data=json.dumps(s).encode(),headers={"Content-Type":"application/json","Authorization":"Bearer "+token},method="POST"),timeout=15)
@@ -1079,13 +1019,14 @@ def fg_title():
 
 # ---- 单实例会话锁：后端 token 校验，防止多标签页并发写 ----
 _SESSION = {"token": None, "ts": 0.0}
-_SESSION_TTL = 8.0  # 秒，超过该时间无心跳则视为失活
+_SESSION_TTL = 60.0  # 秒，超过该时间无心跳则视为失活
+_CI_MODE = "--ci" in sys.argv
 import secrets as _secrets
 _DESKTOP_CLAIM_SECRET = _secrets.token_urlsafe(24)
 def claim_session(force=False):
     now = time.time()
     if not force and _SESSION["token"] and now - _SESSION["ts"] < _SESSION_TTL:
-        return None  # 已有活跃会话
+        return _SESSION["token"] if _CI_MODE else None  # CI 允许多个测试页面复用会话
     tok = _secrets.token_hex(8)
     _SESSION["token"] = tok
     _SESSION["ts"] = now
@@ -1132,9 +1073,9 @@ def crash_record(reason):
     ts = datetime.now().isoformat(); reason_s = str(reason)[:300]
     try:
         rev = lc().get("state_revision", 0)
-        crash_data = {"ts": ts, "reason": reason_s, "version": "0.2.0", "revision": rev}
+        crash_data = {"ts": ts, "reason": reason_s, "version": APP_VERSION, "revision": rev}
     except Exception:
-        crash_data = {"ts": ts, "reason": reason_s, "version": "0.2.0"}
+        crash_data = {"ts": ts, "reason": reason_s, "version": APP_VERSION}
     try:
         with open(P["crash"], "w", encoding="utf-8") as f:
             json.dump(crash_data, f)
@@ -1154,7 +1095,7 @@ _install_excepthook()
 class WebApp:
     def __init__(self):
         self.focus=""; self.alive=True; self._coach_tick=0
-        self._fg_started=False
+        self._fg_started=False; self._fg_stop=threading.Event()
         self._fine_grained=lc().get("privacy",{}).get("fine_grained_fg_enabled",True)
         self._start_ts = time.time()  # for coach session duration tracking
         self._fg_data=lf(); self._fg_last_flush=time.time()
@@ -1165,11 +1106,13 @@ class WebApp:
         start_infer_apps()
     def start_foreground_tracking(self):
         if self._fg_started: return
-        self._fg_started=True
+        self._fg_stop.clear(); self._fg_started=True
         # ---- Foreground tracking: prefer event-driven if available ----
         threading.Thread(target=self._fg_loop, daemon=True).start()
+    def stop_foreground_tracking(self):
+        self._fg_stop.set(); self._fg_started=False
     def _fg_loop(self):
-        while self.alive:
+        while self.alive and not self._fg_stop.is_set():
             self.focus=fg_title()
             if not self._fine_grained: self.focus=self.focus.split(":",1)[0]
             k=((self.focus.split(":",1)[0] if ":" in self.focus else self.focus)[:40] or "n/a")
@@ -1178,15 +1121,6 @@ class WebApp:
                     self._fg_data[k]=self._fg_data.get(k,0)+2
                     if time.time()-self._fg_last_flush >= 15:
                         sf(clean_fg(self._fg_data)); self._fg_last_flush=time.time()
-            if time.time()-self._coach_tick>60:
-                self._coach_tick=time.time()
-                try:
-                    with _CFG_LOCK:
-                        c=ensure_goal_state(lc())
-                        decision=adaptive.passive_review(c)
-                        if decision: save_goal_state(c); evlog(c,"adaptive_adjust",decision.get("reason",""),decision)
-                        sc(c)
-                except Exception: pass
             time.sleep(2)
 
     def _coach_tick_loop(self):
@@ -1208,11 +1142,14 @@ class WebApp:
         return self.focus
     def state(self):
         c=ensure_goal_state(lc()); flags=c.get("done_flags",[])
+        details=goal_details(c)
+        if adaptive.is_learning_goal(c.get("goal",""), details):
+            adaptive.SkillMap.load(c, details)
         public_model=copy.deepcopy(c.get("user_model",{}))
         public_model.pop("fsrs_review_logs",None); public_model.pop("fsrs_scheduler",None)
         for skill in (public_model.get("skills",{}) or {}).values():
             if isinstance(skill,dict): skill.pop("fsrs_card",None)
-        return {"goal":c.get("goal",""),"goals":c.get("goals",[]),"active_goal":c.get("active_goal",0),"tasks":task_items(c.get("tasks",[]),flags),"done_flags":list(flags),
+        return {"goal":c.get("goal",""),"goals":[copy.deepcopy(g) for g in c.get("goals",[]) if isinstance(g,dict)],"goal_records":copy.deepcopy(c.get("goals",[])),"active_goal":c.get("active_goal",0),"theme":UI_THEME,"tasks":task_items(c.get("tasks",[]),flags),"done_flags":list(flags),
             "completion_pct":c.get("completion_pct",0),"task_apps":merged_task_apps(c),
             "manual_task_apps":c.get("manual_task_apps",[]),"ai_task_apps":c.get("ai_task_apps",[]),
             "task_app_categories":c.get("task_app_categories",[]),"app_catalog_ready":bool(c.get("app_catalog")),
@@ -1252,6 +1189,7 @@ GEN_STATUS={"running":False,"step":"空闲","message":"","ts":0}
 GEN_TERMINAL_STEPS={"完成","失败","completed","failed"}
 GEN_LOCK=threading.Lock()
 GEN_START_LOCK=threading.Lock()
+GENERATOR=None
 _UNDO=[]
 
 def _agent_tools(c):
@@ -1424,24 +1362,30 @@ def gen_status(step, message="", **extra):
     GEN_STATUS.update({"running":step not in GEN_TERMINAL_STEPS,"step":step,"message":message,"ts":time.time()})
     GEN_STATUS.update(extra)
 
-def _start_gen_job():
-    job_id=new_id("gen")
-    gen_status("queued","waiting for generation job",job_id=job_id,mode="ai",error="")
-    def job():
-        with GEN_LOCK:
+def _generation_worker(_job_id, _set_status):
+    _bl("generation worker started: " + str(_job_id))
+    with GEN_LOCK:
+        try:
+            result=gen_tasks()
+            if str(result).startswith("CONFLICT"): return
+            c=ensure_goal_state(lc()); record_product_event(c, "first_task_generated"); save_goal_state(c); sc(c)
+            gen_status("recognizing_apps","matching tasks to installed applications")
+            # Application matching is enrichment; never hold generation's
+            # completion or the UI on a process scan.
+            start_infer_apps()
+            gen_status("completed","tasks and app recognition completed")
+        except Exception as e:
             try:
-                result=gen_tasks()
-                if str(result).startswith("CONFLICT"): return
-                gen_status("recognizing_apps","matching tasks to installed applications")
-                start_infer_apps(wait=True)
-                gen_status("completed","tasks and app recognition completed")
-            except Exception as e:
-                try:
-                    fallback_tasks(ensure_goal_state(lc()),str(e)); gen_status("completed","local fallback tasks generated",mode="fallback")
-                except Exception as fallback_error:
-                    gen_status("failed",str(fallback_error),mode="error",error=str(fallback_error))
-    return JOBS.submit(job, key="generate")
-    return {"message":"generation started","job_id":job_id}
+                c=ensure_goal_state(lc()); fallback_tasks(c,str(e)); record_product_event(c, "first_task_generated"); save_goal_state(c); sc(c); gen_status("completed","local fallback tasks generated",mode="fallback")
+            except Exception as fallback_error:
+                _bl("generation failed: " + repr(fallback_error))
+                gen_status("failed",str(fallback_error),mode="error",error=str(fallback_error))
+
+def _start_gen_job():
+    global GENERATOR
+    if GENERATOR is None:
+        GENERATOR=Generation(JOBS.submit, _generation_worker, status=GEN_STATUS)
+    return GENERATOR.start()
 
 def start_gen_job():
     with GEN_START_LOCK:
@@ -1449,11 +1393,8 @@ def start_gen_job():
         if not readiness["ready"]:
             missing="、".join(readiness.get("missing") or [])
             return {"ok":False, "code":"goal_not_ready", "message":"请先补全目标契约" + ("：还缺"+missing if missing else "。"), "readiness":readiness}
-        c=ensure_goal_state(lc()); record_product_event(c, "goal_ready"); record_product_event(c, "first_task_generated"); save_goal_state(c)
-        if GEN_STATUS.get("running"):
-            return {"ok":True, "message":"generation already running","job_id":GEN_STATUS.get("job_id","")}
-        _start_gen_job()
-        return {"ok":True, "message":"generation started","job_id":GEN_STATUS.get("job_id","")}
+        c=ensure_goal_state(lc()); record_product_event(c, "goal_ready"); save_goal_state(c)
+        return _start_gen_job()
 
 def processes():
     try: raw=_run(["tasklist","/fo","csv","/nh"],timeout=10).stdout
@@ -1845,7 +1786,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): pass
     def send_json(self, data, code=200):
         body=json.dumps(data,ensure_ascii=False).encode()
-        self.send_response(code); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_response(code); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
     def read_json(self):
         n=int(self.headers.get("Content-Length","0") or 0)
         if n > _MAX_JSON_BYTES: raise ValueError("request body too large")
@@ -1912,6 +1853,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"apps":apps,"usable_apps":usable_apps(),"processes":[a["exe"] for a in apps]})
         if self.path=="/favicon.ico": self.send_response(204); self.end_headers(); return
         req_path=self.path.split("?",1)[0]
+        if req_path.startswith("/api/"):
+            self.send_error(404)
+            return
         if req_path.startswith("/icons/"):
             fp=os.path.abspath(os.path.join(P["icons"],req_path.split("/",2)[2]))
             if not path_under(P["icons"], fp) or not os.path.exists(fp): self.send_error(404); return
@@ -1921,10 +1865,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not path_under(WEB_DIR, fp) or not os.path.exists(fp): self.send_error(404); return
         data=open(fp,"rb").read(); mime=mimetypes.guess_type(fp)[0] or "application/octet-stream"
         if mime.startswith("text/") or mime in ("application/javascript","application/json"): mime += "; charset=utf-8"
-        self.send_response(200); self.send_header("Content-Type",mime); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
+        cache = "public, max-age=3600" if mime.startswith(("image/", "font/")) else "no-store"
+        self.send_response(200); self.send_header("Content-Type",mime); self.send_header("Cache-Control",cache); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_POST(self):
         if not self._validate_host_origin(): return
         if not self._check_auth(_AUTH_EXEMPT_POST): return
+        # Keep slow I/O/model calls outside the process-wide config lock.
+        if self.path in {"/api/generate", "/api/chat", "/api/catalog-regenerate", "/api/evaluate", "/api/evaluate-task", "/api/goal-assist"}:
+            return self._do_POST()
         with _CFG_LOCK:
             return self._do_POST()
 
@@ -1978,6 +1926,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except OSError: pass
                 return self.send_json({"ok":True,"message":"完整备份已恢复，请重启应用"})
             data=self.read_json()
+            if self.path=="/api/goal-assist":
+                if not c.get("privacy",{}).get("cloud_ai_enabled",True) or not valid_deepseek_key(dk()):
+                    return self.send_json({"ok":False,"message":"请先在设置中开启云端 AI 并配置有效的 DeepSeek Key"},400)
+                prompt={"title":task_text(data.get("title",c.get("goal",""))),"outcome":task_text(data.get("outcome","")),"deadline":task_text(data.get("deadline","")),"baseline":task_text(data.get("baseline","")),"success_criteria":as_list(data.get("success_criteria",[])),"constraints":as_list(data.get("constraints",[]))}
+                result=deepseek_json([
+                    {"role":"system","content":"你是目标定义助手。基于用户已有内容补全目标，不改变用户意图，不凭空添加具体事实。只返回 JSON：{\"outcome\":\"可交付结果\",\"success_criteria\":[\"可验证标准\"],\"constraints\":[\"现实约束\"]}。保留已有有效信息，标准和约束各最多 5 条。"},
+                    {"role":"user","content":json.dumps(prompt,ensure_ascii=False)}],900,0.2,35,1)
+                if not isinstance(result,dict): return self.send_json({"ok":False,"message":"AI 返回格式无效"},502)
+                return self.send_json({"ok":True,"suggestion":{"outcome":task_text(result.get("outcome",prompt["outcome"])),"success_criteria":as_list(result.get("success_criteria",prompt["success_criteria"]))[:5],"constraints":as_list(result.get("constraints",prompt["constraints"]))[:5]}})
             if self.path=="/api/companion-event":
                 if not COMPANION: return self.send_json({"ok":False,"message":"companion unavailable"},503)
                 kind=task_text(data.get("kind",""))
@@ -2067,6 +2024,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 c["tasks"]=ts; sync_pct(c); save_goal_state(c); evlog(c,"task_adjust",msg,{"idx":i,"action":action})
                 c.setdefault("coach_context",{})["adjustments_today"]=int(c.get("coach_context",{}).get("adjustments_today",0) or 0)+1; sc(c)
                 return self.send_json({"ok":True,"message":msg})
+            if self.path=="/api/skill-unskip":
+                skill_id=task_text(data.get("skill_id",""))
+                if not skill_id: return self.send_json({"ok":False,"message":"缺少技能节点"},400)
+                details=goal_details(c)
+                skill_map=adaptive.SkillMap.load(c, details)
+                skill_map.unskip(skill_id)
+                save_goal_state(c); sc(c)
+                return self.send_json({"ok":True,"knowledge_graph":adaptive.knowledge_graph(c)})
+            if self.path=="/api/skill-map-clear":
+                if data.get("confirm") is not True: return self.send_json({"ok":False,"message":"请确认清空技能地图"},400)
+                push_undo(c,"skill map")
+                model=c.setdefault("user_model",{})
+                for key in ("skills","pack_id","pack_version","coverage_gaps","ability_dimensions",
+                            "ability_dimensions_signature","ability_dimensions_source","ability_diagnostics"):
+                    model.pop(key,None)
+                c.setdefault("user_models_by_goal",{})[gid(c)]=copy.deepcopy(model)
+                evlog(c,"skill_map_clear","清空当前目标技能地图及能力诊断缓存")
+                sc(c)
+                return self.send_json({"ok":True,"knowledge_graph":adaptive.knowledge_graph(c),"message":"技能地图已清空"})
             if self.path=="/api/feedback":
                 try: i=int(data.get("idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
@@ -2074,6 +2050,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not text and not kind: return self.send_json({"ok":False,"message":"feedback is required"},400)
                 try: decision=FEEDBACK.submit(c, i, text, kind)
                 except IndexError: return self.send_json({"ok":False,"message":"task index out of range"},400)
+                if kind=="wrong_direction" and data.get("confirmed") and decision.get("decision")=="realign":
+                    decision["confirmed"]=True
+                    adaptive.apply_decision(c, decision)
+                    save_goal_state(c)
                 evlog(c,"user_feedback",decision.get("reason",""),decision); sc(c)
                 return self.send_json({"ok":True,"decision":decision,"tasks":task_items(c.get("tasks",[]),c.get("done_flags",[]))})
             if self.path=="/api/agent-start":
@@ -2082,7 +2062,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ts=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
                 if i<0 or i>=len(ts): return self.send_json({"ok":False,"message":"task index out of range"},400)
                 run=AGENTS.start(gid(c), ts[i], data.get("max_steps",20))
-                return self.send_json({"ok":True,"run":run})
                 return self.send_json({"ok":True,"run":run})
             if self.path=="/api/agent-step":
                 orch=_agent_orchestrator(c); run=orch.step(task_text(data.get("run_id"))); return self.send_json({"ok":True,"run":run})
@@ -2097,7 +2076,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
                 ok, message = TASKS.set_status(c, i, task_text(data.get("status")), data.get("continuation_note"), data.get("next_action"))
                 return self.send_json({"ok":ok,"message":message}, 200 if ok else 400)
-                return self.send_json({"ok":True,"message":"task state updated"})
             if self.path=="/api/recovery":
                 source=next((t for t in c.get("tasks",[]) if isinstance(t,dict) and t.get("status") in ("paused","partial") and not task_done(t)),None)
                 if not source: return self.send_json({"ok":False,"message":"no recoverable task"},400)
@@ -2190,15 +2168,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ensure_goal_state(c); save_goal_state(c)
                 if not isinstance(data.get("goals"),list): return self.send_json({"ok":False,"message":"目标列表格式不正确"},400)
                 if "task_gen" in data and not isinstance(data.get("task_gen"),dict): return self.send_json({"ok":False,"message":"生成参数格式不正确"},400)
-                old={task_text(g):copy.deepcopy(g) for g in c.get("goals",[]) if isinstance(g,dict) and task_text(g)}
+                old={task_text(g.get("id")):copy.deepcopy(g) for g in c.get("goals",[]) if isinstance(g,dict) and task_text(g.get("id"))}
                 goals=[]
                 for pos,item in enumerate(data.get("goals",[])):
-                    title=task_text(item)
+                    if not isinstance(item,dict): return self.send_json({"ok":False,"message":"目标必须包含稳定 id 和标题"},400)
+                    title=task_text(item.get("title"))
                     if not title: continue
-                    record=old.get(title,{"id":"goal_{}".format(pos),"title":title})
+                    goal_id=task_text(item.get("id")) or str(uuid.uuid4())
+                    record=old.get(goal_id,{"id":goal_id,"title":title})
                     record["title"]=title; goals.append(record)
-                one=task_text(data.get("goal",""))
-                if one and one not in goals: goals.insert(0,one)
                 if not goals: return self.send_json({"ok":False,"message":"请至少设置一个目标"},400)
                 tg=data.get("task_gen",{})
                 if isinstance(tg,dict):
@@ -2247,6 +2225,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 c.setdefault("privacy",copy.deepcopy(CFG0["privacy"]))["monitoring_consent"]=bool(data.get("accepted"))
                 sc(c)
                 if c["privacy"]["monitoring_consent"]: WEBAPP.start_foreground_tracking()
+                else: WEBAPP.stop_foreground_tracking()
                 return self.send_json({"ok":True})
             if self.path=="/api/deepseek-key":
                 key=task_text(data.get("key",""))
@@ -2301,7 +2280,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 subprocess.Popen([app["path"]],creationflags=_CNW)
                 return self.send_json({"ok":True})
             if self.path=="/api/generate":
-                job=start_gen_job(); return self.send_json(job, 200 if job.get("ok") else 400)
+                job=start_gen_job(); _bl("generation request: " + repr(job)); return self.send_json(job, 200 if job.get("ok") else 400)
             if self.path=="/api/reinfer-apps":
                 if _APPRULES and not valid_deepseek_key(dk()):
                     start_infer_apps(); return self.send_json({"ok":True,"message":"offline app matching started"})
@@ -2323,6 +2302,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         r = deepseek_json([{"role":"system","content":"你是 AI 专注教练。根据 state 回复用户，并只提出一个需要用户确认的 action。action 可为 plan、reschedule_first_pending、regenerate_tasks、break 或 null。返回 JSON: {\"reply\":\"...\",\"action\":{...}}"},{"role":"user","content":json.dumps({"message":msg,"state":ctx},ensure_ascii=False)}],900,0.2,30,1)
                     except AIError:
                         r = fallback_chat_action(msg, c)
+                # The model call is outside _CFG_LOCK; reload before the write
+                # so a concurrent short mutation is not overwritten.
+                c=ensure_goal_state(lc())
                 r.setdefault("reply","我会根据当前计划协助你调整。")
                 c.setdefault("coach_messages",[]).append({"ts":datetime.now().isoformat(),"role":"user","text":msg})
                 c["coach_messages"].append({"ts":datetime.now().isoformat(),"role":"assistant","text":r.get("reply",""),"action":r.get("action")})
@@ -2387,7 +2369,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ok, message = ACCEPTANCE.manual_accept(c, i, data.get("reason", "manual approval"))
                 if ok: sc(c)
                 return self.send_json({"ok":ok,"message":message}, 200 if ok else 400)
-                return self.send_json({"ok":True,"message":"任务已手动放行"})
             if self.path=="/api/clear-fg":
                 push_undo(c,"foreground statistics")
                 WEBAPP._fg_data={}; WEBAPP._fg_last_flush=time.time()
@@ -2601,21 +2582,31 @@ def web_tray(url, server):
     while u32.GetMessageW(ctypes.byref(m),None,0,0)>0:
         u32.TranslateMessage(ctypes.byref(m)); u32.DispatchMessageW(ctypes.byref(m))
 
-def run_web():
+def service_context():
+    return ServiceContext(
+        text=task_text, normalize=normalize_tasks, goal_id=gid,
+        sync_pct=sync_pct, save=save_goal_state, event=evlog,
+        undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
+        readiness=lambda c: adaptive.goal_readiness(goal_details(c)),
+        first_task_started=mark_first_task_started,
+        agent_orchestrator=lambda: _agent_orchestrator(ensure_goal_state(lc())),
+        submit=lambda function, *args, key=None: JOBS.submit(function, *args, key=key),
+        agent_loop=lambda run_id: _agent_loop(ensure_goal_state(lc()), run_id),
+        feedback_record=adaptive.record_feedback, done=task_done,
+        learning_outcome=adaptive.record_learning_outcome,
+    )
+
+
+def install_services():
     global TASKS, AGENTS, FEEDBACK, ACCEPTANCE, COMPANION
-    COMPANION = CompanionService(STORE)
-    TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
-                        save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
-                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started,
-                        companion=lambda state, idx, previous, status: COMPANION.on_status(state, idx, previous, status, commit=False))
-    AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
-                          start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
-    FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
-                               save=save_goal_state, event=evlog, compact=sc)
-    ACCEPTANCE = AcceptanceService(normalize=normalize_tasks, text=task_text, sync_pct=sync_pct,
-                                   save=save_goal_state, event=evlog, outcome=adaptive.record_outcome,
-                                   learning_outcome=adaptive.record_learning_outcome,
-                                   companion=lambda state, idx, result: COMPANION.on_acceptance(state, idx, result, commit=False))
+    services = build_services(STORE, service_context())
+    COMPANION, TASKS, AGENTS, FEEDBACK, ACCEPTANCE = (
+        services.companion, services.tasks, services.agents,
+        services.feedback, services.acceptance)
+
+
+def run_web():
+    install_services()
     global WEBAPP
     crash_mark_running()
     atexit.register(crash_mark_clean)
@@ -3022,25 +3013,13 @@ if __name__ == "__main__":
         _bl("main: arg {}".format(a))
         if a=="--generate": cli_gen(); sys.exit(0)
         if a=="--evaluate": cli_eval(); sys.exit(0)
-        if a=="--stats": cli_stats(); sys.exit(0)
+        if a=="--stats": cli_stats("--send-stats" in sys.argv); sys.exit(0)
         if a=="--ci":
             # CI mode: start HTTP server only, no tray, no desktop, no single-instance guard
             _bl("main: CI mode, starting web app only")
             crash_mark_running()
             atexit.register(crash_mark_clean)
-            COMPANION = CompanionService(STORE)
-            TASKS = TaskService(text=task_text, normalize=normalize_tasks, goal_id=gid, sync_pct=sync_pct,
-                                save=save_goal_state, event=evlog, undo=push_undo, compact=sc, outcome=adaptive.record_outcome,
-                        readiness=lambda c: adaptive.goal_readiness(goal_details(c)), first_task_started=mark_first_task_started,
-                        companion=lambda state, idx, previous, status: COMPANION.on_status(state, idx, previous, status, commit=False))
-            AGENTS = AgentService(lambda: _agent_orchestrator(ensure_goal_state(lc())),
-                                  start_loop=lambda run_id: JOBS.submit(_agent_loop, ensure_goal_state(lc()), run_id, key="agent:" + run_id))
-            FEEDBACK = FeedbackService(record=adaptive.record_feedback, done=task_done, sync_pct=sync_pct,
-                                       save=save_goal_state, event=evlog, compact=sc)
-            ACCEPTANCE = AcceptanceService(normalize=normalize_tasks, text=task_text, sync_pct=sync_pct,
-                                           save=save_goal_state, event=evlog, outcome=adaptive.record_outcome,
-                                           learning_outcome=adaptive.record_learning_outcome,
-                                           companion=lambda state, idx, result: COMPANION.on_acceptance(state, idx, result, commit=False))
+            install_services()
             WEBAPP = WebApp()
             # Port zero asks the OS for an available port; CI then publishes the
             # resolved URL for every downstream test step. A positive explicit
@@ -3062,7 +3041,7 @@ if __name__ == "__main__":
                 crash_mark_clean(); WEBAPP.alive = False; s.shutdown()
             sys.exit(0)
     single_instance_guard()
-    mutex_name = "Local\\TaskPanel_D_work_S_scripts"
+    mutex_name = "Local\\TaskVerge"
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     err = ctypes.windll.kernel32.GetLastError()
     if err == 183:  # ERROR_ALREADY_EXISTS

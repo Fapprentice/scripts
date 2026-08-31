@@ -5,9 +5,9 @@ import copy
 import time
 from datetime import datetime
 
-from learning import (ability_profile, diagnostic_dimensions, due_review_task, fallback_task_templates as learning_fallback_templates, initial_diagnostic_tasks, is_generic_planning_task, knowledge_graph, learning_focus, merge_knowledge_graph, next_learning_task,
-                      normalize_diagnostic_dimensions, set_diagnostic_dimensions,
-                      task_consistency_issues, task_semantic_key,
+from learning import (SkillMap, ability_profile, diagnostic_dimensions, due_review_task, fallback_task_templates as learning_fallback_templates, initial_diagnostic_tasks, is_generic_planning_task, is_learning_goal, knowledge_graph, learning_focus, match_pack, merge_knowledge_graph, next_learning_task,
+                      normalize_diagnostic_dimensions, plan_learning_tasks, propose_nodes, requires_recall_rating, set_diagnostic_dimensions,
+                      task_consistency_issues, task_in_map, task_semantic_key,
                       record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials)
 from utils import task_actual_minutes
 
@@ -161,6 +161,12 @@ def apply_decision(state, decision):
     task = tasks[index]
     action = decision.get("decision")
 
+    if action in ("split_task", "diagnose") and task.get("skill_id"):
+        SkillMap(state, ok=True).apply_feedback({
+            "kind": decision.get("kind") or "too_hard",
+            "task_id": task.get("id", ""),
+            "skill_id": task.get("skill_id"),
+        })
     if action == "split_task":
         if task.get("source") == "adaptive":
             decision.update(decision="diagnose", automatic=False,
@@ -184,14 +190,32 @@ def apply_decision(state, decision):
         task["adjustment_reason"] = decision.get("reason", "")
         tasks[index:index + 1] = [first, task]
     elif action == "raise_challenge":
+        original = task.get("acceptance", "")
         task["difficulty"] = min(5, int(task.get("difficulty", 2) or 2) + 1)
+        if task.get("skill_id"):
+            SkillMap(state, ok=True).apply_feedback({
+                "kind": "too_easy", "task_id": task.get("id", ""), "skill_id": task.get("skill_id"),
+            })
+            skill = ((state.get("user_model") or {}).get("skills") or {}).get(task["skill_id"]) or {}
+            if skill.get("demonstration"):
+                task["demonstration"] = skill["demonstration"]
         if "独立验证" not in task.get("acceptance", ""):
-            task["acceptance"] = (task.get("acceptance", "") + "；提供独立验证结果").strip("；")
+            task["acceptance"] = (original + "；提供独立验证结果").strip("；")
     elif action == "reduce_load":
         for later in tasks[index + 1:]:
             if later.get("status") == "pending":
                 later["status"] = "deferred"
         task["adjustment_reason"] = "保留当前核心任务，其余任务顺延"
+    elif action == "realign":
+        if not decision.get("confirmed"):
+            return decision
+        if task.get("skill_id"):
+            SkillMap(state, ok=True).apply_feedback({
+                "kind": "wrong_direction", "confirmed": True,
+                "task_id": task.get("id", ""), "skill_id": task.get("skill_id"),
+                "from": decision.get("from", ""), "to": decision.get("to") or task.get("skill_id"),
+            })
+        task["adjustment_reason"] = "用户确认方向调整：先修降为软先修，验收标准不变"
     else:
         return decision
 

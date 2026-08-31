@@ -172,11 +172,17 @@ class TestNormalizeTask:
     def test_learning_fields_survive_normalization(self):
         nt = utils.normalize_task({"text": "Recall loops", "skill_id": "python.loops",
                                    "prerequisites": ["python.basics"], "learning_task_type": "recall",
-                                   "recall_rating": "Hard"})
+                                   "recall_rating": "Hard", "hint_ladder": ["方向", "步骤"],
+                                   "teach_back_prompt": "解释方法", "independent_check": "独立复现",
+                                   "transfer_prompt": "换题练习"})
         assert nt["skill_id"] == "python.loops"
         assert nt["prerequisites"] == ["python.basics"]
         assert nt["learning_task_type"] == "recall"
         assert nt["recall_rating"] == "hard"
+        assert nt["hint_ladder"] == ["方向", "步骤"]
+        assert nt["teach_back_prompt"] == "解释方法"
+        assert nt["independent_check"] == "独立复现"
+        assert nt["transfer_prompt"] == "换题练习"
 
 
 class TestNormalizeTasks:

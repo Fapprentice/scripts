@@ -50,9 +50,12 @@ function switchPage(page){
   const old = document.querySelector('.page.active');
   const gen = ++_pageSwitchGen;
   const swap = () => {
+    // Ignore late callbacks superseded by a newer page selection.
+    if(gen !== _pageSwitchGen) return false;
     if(old) old.classList.remove('active','page-leaving');
     $$('.page').forEach(x=>x.classList.remove('active'));
     next.classList.add('active');               // CSS pageIn plays on .page.active
+    return true;
   };
   const finish = () => {
     if(gen !== _pageSwitchGen) return;          // superseded by a newer switch
@@ -300,7 +303,7 @@ function renderGoalReadiness(){
   const readiness=state.goal_readiness||state.readiness||{};
   const contract=readiness.contract||state.goal_contract||{};
   let host=$('#goalReadiness');
-  if(!host){ host=document.createElement('section'); host.id='goalReadiness'; host.className='goal-readiness'; $('#dashboard')?.insertBefore(host,$('#dashboard').firstChild); }
+  if(!host){ host=document.createElement('section'); host.id='goalReadiness'; host.className='goal-readiness'; $('#missionEmpty')?.prepend(host); }
   const questions=(readiness.questions||[]).slice(0,3);
   const criteria=(contract.success_criteria||[]).slice(0,3);
   const constraints=(contract.constraints||[]).slice(0,2);
@@ -426,8 +429,10 @@ function render(){
   if($('#goalSelectTop')) $('#goalSelectTop').innerHTML = (state.goals || []).map((g,i)=>`<option value="${i}" ${i===state.active_goal?'selected':''}>${escapeHtml(g)}</option>`).join('') || '<option value="0">尚未设置目标</option>';
   $('#goalsText').value = (state.goals && state.goals.length ? state.goals : (state.goal ? [state.goal] : [])).join('\n');
   if($('#goalCards')) $('#goalCards').innerHTML=(state.goal_records||[]).map((g,i)=>{
-    const criteria=(g.success_criteria||[]).length, constraints=(g.constraints||[]).length;
-    return `<button class="goal-card ${i===state.active_goal?'active':''}" data-edit-goal="${i}"><span><b>${escapeHtml(g.title)}</b><small>${escapeHtml(g.outcome||'尚未填写最终成果')}</small></span><em>${criteria?'标准 '+criteria:'缺少标准'} · ${constraints?'约束 '+constraints:'缺少约束'}　›</em></button>`;
+    const details=i===state.active_goal?(state.goal_details||{}):{};
+    const outcome=g.outcome||details.outcome||'';
+    const criteria=(g.success_criteria||details.success_criteria||[]).length, constraints=(g.constraints||details.constraints||[]).length;
+    return `<button class="goal-card ${i===state.active_goal?'active':''}" data-edit-goal="${i}"><span><b>${escapeHtml(g.title)}</b><small>${escapeHtml(outcome||'尚未填写最终成果')}</small></span><em>${criteria?'标准 '+criteria:'缺少标准'} · ${constraints?'约束 '+constraints:'缺少约束'}　›</em></button>`;
   }).join('');
   const gd=state.goal_details||{};
   if($('#goalOutcome')) $('#goalOutcome').value=gd.outcome||'';
@@ -435,10 +440,18 @@ function render(){
   if($('#goalBaseline')) $('#goalBaseline').value=gd.baseline||'';
   if($('#goalCriteria')) $('#goalCriteria').value=(gd.success_criteria||[]).join('\n');
   if($('#goalConstraints')) $('#goalConstraints').value=(gd.constraints||[]).join('\n');
-  if($('#goalReadiness')){
+  if($('#goalDetailsReadiness')){
     const gr=state.goal_readiness||{};
-    $('#goalReadiness').textContent=gr.ready?'目标定义完整，可以制定计划。':`目标定义 ${gr.score||0}%：${(gr.questions||[]).join(' ')}`;
-    $('#goalReadiness').style.color=gr.ready?'var(--good)':'var(--warn)';
+    $('#goalDetailsReadiness').textContent=gr.ready?'目标定义完整，可以制定计划。':`目标定义 ${gr.score||0}%：${(gr.questions||[]).join(' ')}`;
+    $('#goalDetailsReadiness').style.color=gr.ready?'var(--good)':'var(--warn)';
+  }
+  const packHost=$('#goalSkillPack'), graph=state.knowledge_graph||{};
+  if(packHost){
+    const skipped=(graph.nodes||[]).filter(node=>node.band==='skipped');
+    if(graph.pack_id || skipped.length){
+      packHost.hidden=false;
+      packHost.innerHTML=`<p><b>技能包</b> ${escapeHtml(graph.pack_id||'未绑定')}${graph.pack_version?`@${escapeHtml(graph.pack_version)}`:''}</p>${(graph.gaps||[]).length?`<p class="hint">覆盖缺口：${escapeHtml(graph.gaps.join('、'))}</p>`:''}${skipped.length?`<div class="skip-list">${skipped.map(node=>`<button type="button" data-unskip-skill="${escapeHtml(node.id)}">翻回 ${escapeHtml(node.title||node.id)}</button>`).join('')}</div>`:'<p class="hint">没有基线跳过的节点。</p>'}<button type="button" class="danger skill-map-clear" data-clear-skill-map>清空现有技能地图</button>`;
+    } else packHost.hidden=true;
   }
   countTo($('#pct'), Math.round(state.completion_pct||0), '%');
   const motivation=state.motivation||{};
@@ -565,7 +578,7 @@ const COMPANION_LINES = {
   celebrate: ['过了就过了，别让我再核一次。','证据齐了才许开心。','默契涨一点。标准还是那些。']
 };
 let companionPlay = {until:0, mood:'', speech:'', emote:'', anim:'', treat:''};
-function pickLine(list){ const items=list||[]; return items[Math.floor(Math.random()*Math.max(items.length,1))]||''; }
+function pickLine(list){ return (list||[])[0]||''; }
 function playCompanion(mood, speech, emote, anim, ms, treat){
   companionPlay={until:Date.now()+(ms||1600), mood, speech, emote:emote||'', anim:anim||mood, treat:treat||''};
   renderCompanion();
@@ -592,7 +605,7 @@ function companionSnapshot(){
   let moodLabel=growth.mood_label||'待机';
   let speech=pickLine(COMPANION_LINES[mood==='idle'&&next?'wait':mood]||COMPANION_LINES.idle);
   let line=growth.line||'还没有进行中的任务时，我会在这里等你开始。';
-  let primary={action:'focus', label:'开始专注', hidden:false};
+  let primary={action:'focus', label:next?'开始专注':'生成任务', hidden:false};
   let secondary={action:'rest', label:'休息一下', hidden:true};
   if(doing){
     primary={action:'submit', label:'提交验收', hidden:false};
@@ -612,6 +625,7 @@ function companionSnapshot(){
     primary={action:'goal', label:'去补全目标', hidden:false};
     secondary={action:'rest', label:'休息一下', hidden:true};
   }
+  if(growth.fainted) primary={action:'feed', label:'喂食恢复', hidden:false};
   const playing=companionPlay.until>Date.now();
   if(playing){
     mood=companionPlay.mood||mood;
@@ -704,9 +718,9 @@ function renderCompanion(){
   fill('#companionHungerBar', snap.hunger, snap.hungerMax);
   fill('#companionHpBar', snap.hp, snap.hpMax);
   const hungerRow=$('#companionHungerRow');
-  if(hungerRow) hungerRow.hidden = Number(snap.hunger) > 40 && !snap.fainted;
+  if(hungerRow) hungerRow.hidden = false;
   const hpRow=$('#companionHpRow');
-  if(hpRow) hpRow.hidden = Number(snap.hp) >= 80 && !snap.fainted;
+  if(hpRow) hpRow.hidden = false;
   const spend=$('#companionSpend');
   if(spend){ spend.textContent='花 '+snap.spendCost+' 积分加餐'; spend.disabled=snap.points<snap.spendCost; spend.title=snap.points<snap.spendCost?'积分不够，先把一件事做对':'主动花积分喂一口，不是失败自动扣精力'; }
   host.classList.toggle('is-fainted', !!snap.fainted);
@@ -827,7 +841,9 @@ function renderCurrentTaskBar(){
   const elapsed=Math.max(0,Number(task.actual_seconds)||0)/60+(started&&task.status==='doing'?Math.max(0,(Date.now()-started)/60000):0);
   const evidenceCount=Array.isArray(task.evidence)?task.evidence.filter(Boolean).length:(task.evidence?1:0);
   const acceptanceItems=String(done).split(/[；;\n]/).map(x=>x.trim()).filter(Boolean).slice(0,3);
-  const taskMeta=[typeName(task.type),task.estimated_minutes?`${task.estimated_minutes} 分钟`:'',task.difficulty?`难度 ${task.difficulty}`:'',task.milestone||'',task.skill_id||''].filter(Boolean);
+  const skillNode=(state.knowledge_graph?.nodes||[]).find(item=>item.id===task.skill_id)||{};
+  const skillLabel=skillNode.title||task.skill_id||'';
+  const taskMeta=[typeName(task.type),task.estimated_minutes?`${task.estimated_minutes} 分钟`:'',task.difficulty?`难度 ${task.difficulty}`:'',task.milestone||'',skillLabel].filter(Boolean);
   const taskStatusLabel={doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延'}[task.status]||'待开始';
   const timerText=formatFocusElapsed(task);
   const materials=(task.materials||[]).map((item,materialIdx)=>{
@@ -842,7 +858,8 @@ function renderCurrentTaskBar(){
   const responseBox=(task.interaction||{}).type==='text'?`<textarea class="task-response" data-task-response="${idx}" placeholder="在这里完成作答">${escapeHtml(typeof task.response==='string'?task.response:'')}</textarea>`:'';
   const materialCount=(task.materials||[]).filter(item=>item.type==='question').length;
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
-  const evidenceBox=materials?'':`<h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label>`;
+  const evidenceBox=materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`;
+  const missionFooter=task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`;
   bar.className='current-task-bar mission-task';
   bar.innerHTML=`<article class="mission-card">
     <div class="mission-status"><span><i></i>${taskStatusLabel}${task.status==='doing'&&task.started_at?`　<small>开始于 ${new Date(task.started_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</small>`:''}</span><button data-goto-queue>查看历史任务</button></div>
@@ -855,10 +872,11 @@ function renderCurrentTaskBar(){
       <div><b>交付物</b><span>${escapeHtml(task.expected_output||task.done_definition||'提交可检查的结果')}</span></div>
       <div><b>验收标准</b><span>${escapeHtml(task.acceptance||done)}</span></div>
     </div>
-    ${task.skill_id?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
-    ${evidenceBox}
-    <footer>${task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`}</footer>
+    ${task.skill_id?`<div class="mission-skill">${(()=>{ const node=skillNode; const hard=(state.knowledge_graph?.edges||[]).filter(edge=>edge.to===task.skill_id&&edge.kind!=='soft'); const missing=hard.filter(edge=>{ const parent=(state.knowledge_graph.nodes||[]).find(item=>item.id===edge.from)||{}; return !parent.contract_met && parent.band!=='skipped'; }).map(edge=>{ const parent=(state.knowledge_graph.nodes||[]).find(item=>item.id===edge.from)||{}; return parent.title||edge.from; }); const bits=[]; if(node.mastery_evidence?.threshold) bits.push('掌握：'+node.mastery_evidence.threshold); if(missing.length) bits.push('硬缺口：'+missing.join('、')); return `<b>技能</b><span>${escapeHtml(skillLabel)}</span>${bits.length?`<small>${escapeHtml(bits.join(' · '))}</small>`:''}`; })()}</div>`:''}
+    ${task.skill_id&&((state.user_model?.skills||{})[task.skill_id]?.demonstration||task.demonstration||'recall')==='recall'?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
+    ${evidenceBox?`<div class="mission-evidence-action">${evidenceBox}<footer>${missionFooter}</footer></div>`:`<footer>${missionFooter}</footer>`}
   </article>`;
+  bar.querySelector('.mission-card')?.scrollTo(0, 0);
   let modal=$('#taskMaterialsModal');
   if(modal) modal.remove();
   if(materials){
@@ -1030,20 +1048,24 @@ renderReview = function(){
   if(host && (graph.nodes||[]).length){
     const edges=graph.edges||[];
     host.hidden=false;
+    const bandLabel={skipped:'已会',unlearned:'未学',learning:'在学',due:'到期复习'};
     host.innerHTML=`<div id="knowledgeGraph" class="knowledge-graph">
-      <div class="panel-head"><h3>知识图谱</h3><span>${graph.nodes.length} 个知识点 · ${edges.length} 条前置关系</span></div>
+      <div class="panel-head"><h3>技能地图</h3><span>${graph.nodes.length} 个节点 · ${edges.length} 条先修${graph.pack_id?` · ${escapeHtml(graph.pack_id)}`:''}${graph.coverage===false?' · 覆盖不足':''}</span></div>
+      ${(graph.gaps||[]).length?`<div class="knowledge-empty">覆盖缺口：${escapeHtml((graph.gaps||[]).join('、'))}</div>`:''}
       <div class="knowledge-nodes">${graph.nodes.map(node=>{
-        const parents=edges.filter(edge=>edge.to===node.id).map(edge=>edge.from);
+        const parents=edges.filter(edge=>edge.to===node.id);
         const active=graph.focus?.skill_id===node.id?' active':'';
-        return `<div class="knowledge-node ${node.ready?'ready':'blocked'}${active}">
-          <b>${escapeHtml(node.title||node.id)}</b><span>${Math.round((node.mastery||0)*100)}%</span>
-          ${node.title&&node.title!==node.id?`<small>${escapeHtml(node.id)}</small>`:''}
-          <small>${escapeHtml(node.state||'New')}${parents.length?` · 前置：${escapeHtml(parents.join('、'))}`:' · 起点'}</small>
+        const hardGap=parents.filter(edge=>edge.kind!=='soft'&&!(graph.nodes.find(item=>item.id===edge.from)||{}).contract_met&&(graph.nodes.find(item=>item.id===edge.from)||{}).band!=='skipped');
+        const parentNames=parents.map(edge=>{ const parent=graph.nodes.find(item=>item.id===edge.from)||{}; return `${parent.title||edge.from}${edge.kind==='soft'?'（软）':''}`; });
+        const gapNames=hardGap.map(edge=>{ const parent=graph.nodes.find(item=>item.id===edge.from)||{}; return parent.title||edge.from; });
+        return `<div class="knowledge-node ${node.ready?'ready':'blocked'} band-${escapeHtml(node.band||'unlearned')}${active}">
+          <b>${escapeHtml(node.title||node.id)}</b><span>${escapeHtml(bandLabel[node.band]||node.band||'未学')}</span>
+          <small>${node.contract_met?'已掌握':'未掌握'}${gapNames.length?` · 硬缺口：${escapeHtml(gapNames.join('、'))}`:parentNames.length?` · 先修：${escapeHtml(parentNames.join('、'))}`:' · 起点'}</small>
         </div>`;
       }).join('')}</div></div>`;
   } else if(host){
     host.hidden=false;
-    host.innerHTML='<div class="knowledge-graph"><div class="panel-head"><h3>知识图谱</h3><span>0 个知识点</span></div><div class="knowledge-empty">完成一次学习任务后，这里会显示能力节点与前置关系。</div></div>';
+    host.innerHTML='<div class="knowledge-graph"><div class="panel-head"><h3>技能地图</h3><span>0 个节点</span></div><div class="knowledge-empty">先完成技能地图，才能生成今日学习任务。</div></div>';
   }
   $$('#archiveList .log-item').forEach((el, i) => {
     el.dataset.archive = String((state.archives || []).length - 1 - i);
@@ -1056,11 +1078,12 @@ function eventName(k){
 }
 function taskCard(t,i){
   const skill=(state.user_model?.skills||{})[t.skill_id]||{};
+  const skillTitle=(state.knowledge_graph?.nodes||[]).find(node=>node.id===t.skill_id)?.title || skill.title || '';
   const learningLabel=({diagnostic:'诊断',recall:'闭卷回忆',practice:'练习',explain:'费曼解释',transfer:'迁移应用',review:'到期复习'}[t.learning_task_type]||t.learning_task_type||'');
-  const learningMeta=t.skill_id ? `<div class="learning-meta"><b>${escapeHtml(t.skill_id)}</b>${learningLabel?`<span>${escapeHtml(learningLabel)}</span>`:''}<span>掌握度 ${Math.round((skill.mastery||0)*100)}%</span></div>` : '';
-  if(t.status==='skipped') return `<div class="task task-compact deferred"><div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">今日已跳过，可稍后编辑</div></div><button data-edit="${i}">编辑</button></div>`;
-  if(t.done) { const ar=t.acceptance_result||{}, ev=(t.evidence||[]).length; return `<div class="task task-compact done">
-    <input type="checkbox" checked disabled aria-label="任务已完成">
+  const learningMeta=t.skill_id ? `<div class="learning-meta"><b>${escapeHtml(skillTitle||t.skill_id)}</b>${learningLabel?`<span>${escapeHtml(learningLabel)}</span>`:''}</div>` : '';
+  if(t.status==='skipped') return `<div class="task task-compact deferred" data-task-index="${i}"><div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">今日已跳过，可稍后编辑</div></div><button data-edit="${i}">编辑</button></div>`;
+  if(t.done) { const ar=t.acceptance_result||{}, ev=(t.evidence||[]).length; return `<div class="task task-compact done" data-task-index="${i}">
+    <span class="task-complete-mark" aria-label="任务已完成">✓</span>
     <div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">已完成${ev?` · ${ev} 项交付物`:''}${ar.reason?` · ${escapeHtml(ar.reason)}`:''}</div></div>
     <button data-edit="${i}">编辑</button>
   </div>`; }
@@ -1079,14 +1102,14 @@ function taskCard(t,i){
   const evList = Array.isArray(t.evidence) ? t.evidence.filter(Boolean) : (t.evidence ? [t.evidence] : []);
   const evidenceNames = evList.length ? evList.map(e => String(e).split(/[\\/]/).pop()).join(', ') : '尚未上传交付物';
   const evidenceTitle = evList.length ? evList.map(String).join('\n') : '';
-  return `<div class="task ${t.done?'done':''}">
-    <input type="checkbox" ${t.done?'checked':''} data-ai-evaluate="${i}" aria-label="验收任务 ${escapeHtml(t.text || t.title || '')}" title="提交证据后由 AI 验收">
+  return `<div class="task ${t.done?'done':''}" data-task-index="${i}">
+    <button class="task-accept" data-ai-evaluate="${i}" aria-label="验收任务 ${escapeHtml(t.text || t.title || '')}">提交验收</button>
     <div class="task-body">
       <div class="task-title">${escapeHtml(t.text || t.title || '')}</div>
       <div class="goal-ancestry">${ancestry.map(escapeHtml).join('<i>→</i>')}</div>
-      <div class="task-meta"><b>${stateLabel}</b> · ${escapeHtml(meta)}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
+      <div class="task-meta"><b data-task-status>${stateLabel}</b> · ${escapeHtml(meta)}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
       ${learningMeta}
-      ${t.skill_id ? `<div class="recall-rating" aria-label="回忆质量">
+      ${t.skill_id && ((state.user_model?.skills||{})[t.skill_id]?.demonstration||t.demonstration||'recall')==='recall' ? `<div class="recall-rating" aria-label="回忆质量">
         <small>回忆质量：</small>
         ${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${t.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${i}">${label}</button>`).join('')}
       </div>` : ''}
@@ -1122,6 +1145,16 @@ function taskCard(t,i){
     <button data-edit="${i}">编辑</button>
   </div>`;
 }
+function openTaskDetails(idx){
+  const task=state.tasks[idx]||{}, skill=(state.knowledge_graph?.nodes||[]).find(node=>node.id===task.skill_id)?.title||task.skill_id||'未指定';
+  let modal=$('#taskDetailsModal');
+  if(!modal){ modal=document.createElement('div'); modal.id='taskDetailsModal'; modal.className='advanced-settings-modal task-details-modal'; document.body.appendChild(modal); }
+  const field=(label,value)=>`<section class="task-detail-field"><small>${label}</small><p>${escapeHtml(value||'暂无')}</p></section>`;
+  const hints=(task.hint_ladder||[]).map((hint,i)=>`<li><b>提示 ${i+1}</b>${escapeHtml(hint)}</li>`).join('');
+  const support=hints||task.teach_back_prompt||task.independent_check||task.transfer_prompt?`<section class="task-detail-support"><b>学习辅助</b>${hints?`<ol>${hints}</ol>`:''}${field('教回检查',task.teach_back_prompt)}${field('独立检查',task.independent_check)}${field('迁移练习',task.transfer_prompt)}</section>`:'';
+  modal.innerHTML=`<section class="advanced-settings-dialog task-details-dialog"><header><div><span class="task-detail-kicker">任务详情</span><h2>${escapeHtml(task.text||task.title||'未命名任务')}</h2></div><button data-close-task-details aria-label="关闭任务详情">×</button></header><div class="advanced-settings-body"><div class="task-detail-tags"><span>${escapeHtml(typeName(task.type))}</span><span>${task.estimated_minutes?`${Number(task.estimated_minutes)} 分钟`:'未设时长'}</span><span>技能：${escapeHtml(skill)}</span></div><div class="task-detail-grid">${field('任务描述',task.description)}${field('交付物',task.expected_output||task.done_definition)}${field('验收标准',task.acceptance)}${support}</div></div><footer><button class="primary" data-close-task-details>关闭</button></footer></section>`;
+  setModalOpen(modal,true);
+}
 function typeName(x){
   return ({learn:'学习',practice:'练习',review:'复盘',build:'构建',write:'写作',research:'研究'}[x] || x || '任务');
 }
@@ -1151,7 +1184,10 @@ async function uploadEvidenceFile(idx, input){
   if(input) input.value='';
   _lastFilePickTs = 0;  // allow full refresh to show new evidence files
   if(ok) toast('交付物已保存');
-  await load();
+  // Preserve the live card and its file input after the upload completes.
+  // The next full sync can update unrelated dashboard data without replacing
+  // an editor the user is currently using.
+  try{ state=normalizeState(await api('state')); renderTasksLight(); }catch(_){ }
 }
 function formatFocusElapsed(task){
   const started=task.started_at?new Date(task.started_at).getTime():0;
@@ -1209,6 +1245,7 @@ async function load(){
     throw e;
   }
   state = stateData;
+  if(state.theme) applyTheme(state.theme);
   render();
   setSyncState('synced','刚刚');
   _lastSyncTs = Date.now();
@@ -1231,6 +1268,7 @@ async function refreshFg(){
   if(activePage!=='dashboard') return;
   try{
     const s = await api('state');
+    if(s.theme && s.theme !== currentTheme()) applyTheme(s.theme);
     // Lightweight status refresh; foreground details are intentionally not exposed.
     $('#focus').textContent = '前台：'+(s.focus||'--');
     // update completion ring silently (completion_pct can change on eval)
@@ -1255,7 +1293,7 @@ function setGenerationUi(kind, message){
   if(regenerate) regenerate.textContent=kind==='running'?'生成中…':'重新生成任务';
 }
 async function refreshLive(){
-  if(activePage!=='dashboard') return;
+  if(activePage!=='dashboard' || document.hidden) return;
   await refreshFg();
   // Every 30s refresh only task-status DOM instead of a full render()
   // (keeps the file-picker guard; skips settings/goal/motivation fields).
@@ -1282,30 +1320,14 @@ function renderTasksLight(){
   } else {
     $('#statusPill').textContent='就绪'; $('#statusPill').style.color='var(--accent)';
   }
-  renderMotivationScore();
-  renderBreakWidget();
-  renderOnboarding();
-  renderGoalReadiness();
-  renderCompanion();
-  renderCurrentTaskBar();
-  syncFocusStatusPill();
-  renderSessionControls();
-  renderRecoveryAction();
-  renderReview();
-  renderGoalUnderstanding();
-  // Same file-picker guard as render()
-  const _hasFileSelected = $$('#taskList [data-evidence-file]').some(inp => inp.files && inp.files.length);
-  const _skipTaskList = _hasFileSelected || Date.now() - _lastFilePickTs < 5000;
-  if(!_skipTaskList){
-    const _beforeRects = captureTaskRects();
-    $('#taskList').innerHTML = state.tasks.map(taskCard).join('') || '<p class="hint">还没有任务。</p>';
-    staggerTasks();
-    flipTasks(_beforeRects);
-  }
-  addTaskAdjustControls();
-  renderCrashNotice();
-  renderUndoAction();
-  renderDailyWrap();
+  // Polling must not replace live task cards or their editors/file inputs.
+  $$('#taskList [data-task-index]').forEach(el=>{
+    const task=state.tasks[+el.dataset.taskIndex];
+    const status=el.querySelector('[data-task-status]');
+    if(!task || !status) return;
+    status.textContent=({doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延',skipped:'已跳过'}[task.status]||'待开始');
+    el.classList.toggle('done', !!task.done);
+  });
 }
 async function runGeneration(){
   setGenerationUi('running','正在启动任务生成…');
@@ -1368,8 +1390,35 @@ document.addEventListener('click', async e=>{
     $('#goalDetailsTitle').textContent=state.goals[idx]||'目标详情';
     setModalOpen($('#goalDetailsModal'),true); return;
   }
+  const unskip=e.target.closest?.('[data-unskip-skill]');
+  if(unskip){
+    await api('skill-unskip',{skill_id:unskip.dataset.unskipSkill});
+    toast('已翻回该节点');
+    await load();
+    return;
+  }
+  if(e.target.closest?.('[data-clear-skill-map]')){
+    if(!confirmDlg('清空后会移除当前目标的技能节点和能力诊断缓存，但保留目标与任务记录。确定继续吗？')) return;
+    await api('skill-map-clear',{confirm:true});
+    toast('技能地图已清空');
+    await load();
+    return;
+  }
   if(e.target.closest?.('[data-close-goal-details]')||e.target.id==='goalDetailsModal'){
     setModalOpen($('#goalDetailsModal'),false); return;
+  }
+  if(e.target.id==='assistGoal'){
+    const button=e.target, values={title:$('#goalDetailsTitle')?.textContent||'',outcome:$('#goalOutcome')?.value,deadline:$('#goalDeadline')?.value,baseline:$('#goalBaseline')?.value,success_criteria:($('#goalCriteria')?.value||'').split(/\n+/).filter(Boolean),constraints:($('#goalConstraints')?.value||'').split(/\n+/).filter(Boolean)};
+    button.disabled=true; button.textContent='AI 完善中…';
+    try{
+      const result=await api('goal-assist',values), suggestion=result.suggestion||{};
+      if($('#goalOutcome') && suggestion.outcome) $('#goalOutcome').value=suggestion.outcome;
+      if($('#goalCriteria')) $('#goalCriteria').value=(suggestion.success_criteria||[]).join('\n');
+      if($('#goalConstraints')) $('#goalConstraints').value=(suggestion.constraints||[]).join('\n');
+      toast('AI 已生成建议，请确认后保存');
+    }catch(err){ toast('AI 辅助失败：'+err.message,false); }
+    finally{ button.disabled=false; button.textContent='✦ AI 辅助完善'; }
+    return;
   }
   if(e.target.id==='addGoal'){
     const title=(await promptDlg('新目标名称'))?.trim();
@@ -1383,7 +1432,9 @@ document.addEventListener('click', async e=>{
     $('#saveSettings').click(); return;
   }
   if(e.target.id==='saveGoalDetails'){
-    $('#saveSettings').click(); setModalOpen($('#goalDetailsModal'),false); return;
+    // Let saveSettings finish its async reload before closing; otherwise the
+    // add-goal flow can reopen the details modal after this close call.
+    $('#saveSettings').click(); setTimeout(()=>setModalOpen($('#goalDetailsModal'),false),250); return;
   }
   if(e.target.id==='deleteGoal'){
     const idx=state.active_goal||0, title=(state.goals||[])[idx]||'当前目标';
@@ -1451,6 +1502,14 @@ document.addEventListener('click', async e=>{
     catch(err){ toast('当前没有需要补救的任务',false); }
     return;
   }
+  const taskRow=e.target.closest?.('#taskList .task');
+  if(taskRow && !e.target.closest('button,input,label')){
+    openTaskDetails(+taskRow.dataset.taskIndex);
+    return;
+  }
+  if(e.target.closest?.('[data-close-task-details]') || e.target.id==='taskDetailsModal'){
+    setModalOpen($('#taskDetailsModal'),false); return;
+  }
   const recover=e.target.closest?.('[data-create-recovery]');
   if(recover){
     try{ await api('remediate-task',{idx:+recover.dataset.createRecovery}); toast('已创建补救任务'); await load(); }
@@ -1463,8 +1522,13 @@ document.addEventListener('click', async e=>{
     const kind=feedback.dataset.feedback, idx=+feedback.dataset.feedbackIdx;
     const detail=await promptDlg(kind==='stuck'?'现在只做哪一个最小动作？（例如：找到 X 的调用位置）':'补充反馈（可直接确认）',labels[kind]||'');
     if(!detail) return;
+    let confirmed=false;
+    if(kind==='wrong_direction'){
+      confirmed=confirmDlg('确认只调整技能先修（硬先修降为软先修），不降低最终成果和验收标准？');
+      if(!confirmed) return;
+    }
     try{
-      const result=await api('feedback',{idx,kind,text:detail}), d=result.decision||{};
+      const result=await api('feedback',{idx,kind,text:detail,confirmed}), d=result.decision||{};
       if(kind==='stuck'){
         await api('task-state',{idx,status:'partial',continuation_note:`先做：${detail}` ,next_action:`先做：${detail}`});
       }
@@ -1633,13 +1697,14 @@ document.addEventListener('click', async e=>{
   if(e.target.id==='saveSettings'){
     const goals=$('#goalsText').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
     if(!goals.length){ showModal('无法保存','请至少设置一个目标。','warn'); return; }
-    const current=state.goals?.[state.active_goal||0];
+    const currentIndex=state.active_goal||0;
     const pendingActive=$('#goalsText').dataset.pendingActive;
     const openAfterSave=$('#goalsText').dataset.openAfterSave==='1';
-    const active=pendingActive===undefined?Math.max(0,goals.indexOf(current)):+pendingActive;
+    const active=pendingActive===undefined?currentIndex:+pendingActive;
+    const goalRecords=goals.map((title,i)=>({...(state.goal_records?.[i]||{}),title}));
     delete $('#goalsText').dataset.pendingActive;
     delete $('#goalsText').dataset.openAfterSave;
-    await api('settings',{goals,active_goal:active,autostart:$('#autostart').checked,goal_details:{
+    await api('settings',{goals:goalRecords,active_goal:active,autostart:$('#autostart').checked,goal_details:{
       outcome:$('#goalOutcome')?.value.trim()||'', deadline:$('#goalDeadline')?.value||'',
       baseline:$('#goalBaseline')?.value.trim()||'',
       success_criteria:($('#goalCriteria')?.value||'').split(/\n+/).map(x=>x.trim()).filter(Boolean),

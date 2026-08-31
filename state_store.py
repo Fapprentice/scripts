@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 APPLICATION_ID = 0x54564745
-SCHEMA_VERSION = 2
-MIGRATIONS = {1: "initial_schema", 2: "companion_growth"}
+SCHEMA_VERSION = 3
+MIGRATIONS = {1: "initial_schema", 2: "companion_growth", 3: "skill_prerequisite_kind"}
 COMPANION_ID = "dafeiyu"
 COMPANION_NAME = "大肥鱼"
 COMPANION_DEFAULT_ENERGY = 70
@@ -129,17 +129,13 @@ class SqliteStore:
         CREATE TABLE IF NOT EXISTS focus_sessions(id TEXT PRIMARY KEY,task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY,task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS skills(id TEXT PRIMARY KEY,goal_id TEXT REFERENCES goals(id) ON DELETE CASCADE,payload TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS skill_prerequisites(skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,prerequisite_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,PRIMARY KEY(skill_id,prerequisite_id));
+        CREATE TABLE IF NOT EXISTS skill_prerequisites(skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,prerequisite_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,kind TEXT NOT NULL DEFAULT 'legacy_unspecified',rationale TEXT NOT NULL DEFAULT '',PRIMARY KEY(skill_id,prerequisite_id));
         CREATE TABLE IF NOT EXISTS review_logs(id TEXT PRIMARY KEY,skill_id TEXT REFERENCES skills(id) ON DELETE SET NULL,payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,goal_id TEXT REFERENCES goals(id) ON DELETE SET NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS motivation_ledger(id TEXT PRIMARY KEY,goal_id TEXT REFERENCES goals(id) ON DELETE SET NULL,payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS app_usage_daily(day TEXT NOT NULL,app TEXT NOT NULL,seconds INTEGER NOT NULL,PRIMARY KEY(day,app));
         CREATE TABLE IF NOT EXISTS eval_samples(id TEXT PRIMARY KEY,payload TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deleted_items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,deleted_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,energy INTEGER NOT NULL,bond INTEGER NOT NULL,day TEXT NOT NULL,poke_used INTEGER NOT NULL DEFAULT 0,feed_used INTEGER NOT NULL DEFAULT 0,talk_used INTEGER NOT NULL DEFAULT 0,last_poke_at TEXT,last_feed_at TEXT,last_talk_at TEXT,last_settle_at TEXT,last_rest_start_at TEXT,payload TEXT NOT NULL DEFAULT '{}',updated_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS companion_events(id TEXT PRIMARY KEY,ts TEXT NOT NULL,kind TEXT NOT NULL,treat TEXT,delta_energy INTEGER NOT NULL DEFAULT 0,delta_bond INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL,task_id TEXT,goal_id TEXT,dedupe_key TEXT,source TEXT,payload TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS idx_companion_events_ts ON companion_events(ts);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_events_dedupe ON companion_events(dedupe_key) WHERE dedupe_key IS NOT NULL;
         """
         with self._lock, self._connect() as db:
             db.executescript(schema)
@@ -156,9 +152,30 @@ class SqliteStore:
                 raise StorageCorruptionError("database schema is newer than this application")
             if current < SCHEMA_VERSION:
                 for version in range(current + 1, SCHEMA_VERSION + 1):
+                    self._migration(version, db)
                     db.execute("INSERT OR REPLACE INTO schema_migrations VALUES (?,?,?,?)", (version, version - 1, MIGRATIONS[version], datetime.now().isoformat()))
                 db.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
             self._ensure_companion_row(db)
+
+    def _migration(self, version, db):
+        if version == 1:
+            return
+        if version == 2:
+            db.executescript("""
+            CREATE TABLE IF NOT EXISTS companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,energy INTEGER NOT NULL,bond INTEGER NOT NULL,day TEXT NOT NULL,poke_used INTEGER NOT NULL DEFAULT 0,feed_used INTEGER NOT NULL DEFAULT 0,talk_used INTEGER NOT NULL DEFAULT 0,last_poke_at TEXT,last_feed_at TEXT,last_talk_at TEXT,last_settle_at TEXT,last_rest_start_at TEXT,payload TEXT NOT NULL DEFAULT '{}',updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS companion_events(id TEXT PRIMARY KEY,ts TEXT NOT NULL,kind TEXT NOT NULL,treat TEXT,delta_energy INTEGER NOT NULL DEFAULT 0,delta_bond INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL,task_id TEXT,goal_id TEXT,dedupe_key TEXT,source TEXT,payload TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_companion_events_ts ON companion_events(ts);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_events_dedupe ON companion_events(dedupe_key) WHERE dedupe_key IS NOT NULL;
+            """)
+            return
+        if version == 3:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(skill_prerequisites)")}
+            if "kind" not in columns:
+                db.execute("ALTER TABLE skill_prerequisites ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy_unspecified'")
+            if "rationale" not in columns:
+                db.execute("ALTER TABLE skill_prerequisites ADD COLUMN rationale TEXT NOT NULL DEFAULT ''")
+            return
+        raise StorageCorruptionError("missing migration for schema {}".format(version))
 
     def _stored_schema_version(self):
         with sqlite3.connect(str(self.db_path), factory=_ClosingConnection) as db:
@@ -307,10 +324,37 @@ class SqliteStore:
         models = state.get("user_models_by_goal", {}) if isinstance(state.get("user_models_by_goal"),dict) else {}
         for goal_id, model in models.items():
             if not isinstance(model,dict): continue
-            for si, skill in enumerate(model.get("skills",[]) or []):
-                if not isinstance(skill,dict): continue
-                skill_id = "{}::{}".format(goal_id, skill.get("id") or skill.get("key") or self._row_id("skill",skill,si))
+            raw_skills = model.get("skills") or {}
+            if isinstance(raw_skills, dict):
+                skill_items = [dict(value, id=key) if isinstance(value, dict) else {"id": key}
+                               for key, value in raw_skills.items()]
+            elif isinstance(raw_skills, list):
+                skill_items = [item for item in raw_skills if isinstance(item, dict)]
+            else:
+                skill_items = []
+            inserted = {}
+            for si, skill in enumerate(skill_items):
+                local_id = str(skill.get("id") or skill.get("key") or self._row_id("skill",skill,si))
+                skill_id = "{}::{}".format(goal_id, local_id)
                 db.execute("INSERT INTO skills VALUES (?,?,?)", (skill_id,str(goal_id) if str(goal_id) in goal_ids else None,self._json(skill)))
+                inserted[local_id] = skill_id
+            for local_id, skill_id in inserted.items():
+                skill = next((item for item in skill_items if str(item.get("id") or item.get("key") or "") == local_id), {})
+                meta = skill.get("prerequisite_meta") if isinstance(skill.get("prerequisite_meta"), dict) else {}
+                for parent in skill.get("prerequisites") or []:
+                    parent = str(parent).strip()
+                    if not parent:
+                        continue
+                    parent_id = inserted.get(parent) or "{}::{}".format(goal_id, parent)
+                    if not db.execute("SELECT 1 FROM skills WHERE id=?", (parent_id,)).fetchone():
+                        continue
+                    info = meta.get(parent) if isinstance(meta.get(parent), dict) else {}
+                    kind = str(info.get("kind") or "legacy_unspecified")
+                    if kind not in ("hard", "soft", "legacy_unspecified"):
+                        kind = "legacy_unspecified"
+                    rationale = str(info.get("rationale") or "")
+                    db.execute("INSERT OR IGNORE INTO skill_prerequisites(skill_id,prerequisite_id,kind,rationale) VALUES (?,?,?,?)",
+                               (skill_id, parent_id, kind, rationale))
             for ri, review in enumerate(model.get("fsrs_review_logs",[]) or []):
                 if not isinstance(review,dict): continue
                 raw_skill_id = str(review.get("skill_id") or review.get("skill") or "")

@@ -13,6 +13,11 @@ class AcceptanceService:
         tasks = self.normalize(state.get("tasks", []), state.get("active_goal_id", ""), state.get("done_flags", []))
         if idx < 0 or idx >= len(tasks): return False, "task index out of range"
         result = explainable_result(result)
+        from learning import task_is_unlocked
+        if result.get("status") == "passed" and tasks[idx].get("skill_id") and not task_is_unlocked(state, tasks[idx]):
+            result = explainable_result({"pass": False, "status": "failed",
+                "reason": "硬先修未掌握，不能验收通过该技能节点",
+                "missing": ["硬先修"], "next_steps": ["先完成硬先修再验收"]})
         tasks[idx]["acceptance_result"] = result
         flags = list(state.get("done_flags", []))
         while len(flags) <= idx: flags.append(False)
@@ -26,6 +31,16 @@ class AcceptanceService:
         elif result["status"] == "failed" and self.outcome: self.outcome(state, "failed")
         if result["status"] in ("passed", "failed") and self.learning_outcome:
             self.learning_outcome(state, state["tasks"][idx], passed)
+            try:
+                from learning import SkillMap
+                task = state["tasks"][idx]
+                if task.get("skill_id"):
+                    SkillMap(state, ok=True).apply_outcome(task["skill_id"], {
+                        "task_passed": passed, "evidence": task.get("evidence") or task.get("response"),
+                        "recall_rating": task.get("recall_rating"),
+                    })
+            except Exception:
+                pass
         if self.companion and result["status"] != "needs_review":
             self.companion(state, idx, result)
         self.sync_pct(state); self.save(state)
@@ -61,7 +76,8 @@ class AcceptanceService:
     def manual_accept(self, state, idx, reason="manual approval"):
         tasks = self.normalize(state.get("tasks", []), state.get("active_goal_id", ""), state.get("done_flags", []))
         if idx < 0 or idx >= len(tasks): return False, "task index out of range"
-        if tasks[idx].get("skill_id") and not tasks[idx].get("recall_rating"):
+        from learning import requires_recall_rating
+        if requires_recall_rating(tasks[idx], state) and not tasks[idx].get("recall_rating"):
             return False, "select recall quality before accepting a learning task"
         reason = self.text(reason) or "manual approval"
         result = explainable_result({"pass": True, "status": "passed", "reason": "manual approval: " + reason,
