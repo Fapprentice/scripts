@@ -196,7 +196,7 @@ def instantiate_stage_task(pack, stage_id, proposal):
     errors = validate_stage_proposal(pack, template, proposal)
     if errors: raise ValueError("invalid stage proposal: " + "; ".join(errors))
     task = dict(proposal)
-    task.update({"task_kind": "stage", "skill_id": "", "primary_skill_id": "", "evidence_target": "integration", "type": "challenge", "verification_mode": "strict", "source": "pack", "locked": True})
+    task.update({"task_kind": "stage", "skill_id": "", "primary_skill_id": "", "evidence_target": "integration", "type": "challenge", "verification_mode": "strict", "source": "pack", "locked": False})
     task["evidence_contract"] = dict(template["evidence_contract"])
     return task
 
@@ -239,7 +239,9 @@ def migrate_legacy_tasks(state):
             if task_id not in existing:
                 events.append({"kind": "task_migrated_out", "task_id": task_id,
                                "reason": "地图修复转为内部规划动作"})
-            state.setdefault("internal_map_repairs", []).append({"task_id": task_id, "task": dict(task)})
+            repairs = state.setdefault("internal_map_repairs", [])
+            if not any(isinstance(item, dict) and str(item.get("task_id")) == task_id for item in repairs):
+                repairs.append({"task_id": task_id, "task": dict(task)})
             continue
         kept.append(task); kept_flags.append(done)
     state["tasks"], state["done_flags"] = kept, kept_flags

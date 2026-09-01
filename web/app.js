@@ -856,7 +856,7 @@ function renderCurrentTaskBar(){
     return `<section class="task-material source"><b>${escapeHtml(item.title||'任务材料')}</b><p>${escapeHtml(item.content||item.prompt||'')}</p></section>`;
   }).join('');
   const responseBox=(task.interaction||{}).type==='text'?`<textarea class="task-response" data-task-response="${idx}" placeholder="在这里完成作答">${escapeHtml(typeof task.response==='string'?task.response:'')}</textarea>`:'';
-  const criterionBox=task.task_kind==='outcome' && Array.isArray(task.criteria)?`<section class="criterion-evidence"><h4>按成功标准提交独立证据</h4>${task.criteria.map(item=>{ const id=item.id||''; const refs=Array.isArray(task.criterion_evidence?.[id])?task.criterion_evidence[id].join('\n'):''; return `<label><b>${escapeHtml(item.text||id)}</b><textarea data-criterion-evidence="${idx}" data-criterion-id="${escapeHtml(id)}" placeholder="输入该标准对应的证据路径或说明">${escapeHtml(refs)}</textarea></label>`; }).join('')}</section>`:'';
+  const criterionBox=task.task_kind==='outcome' && Array.isArray(task.criteria)?`<section class="criterion-evidence"><h4>按成功标准提交独立证据</h4>${task.criteria.map(item=>{ const id=item.id||''; const refs=Array.isArray(task.criterion_evidence?.[id])?task.criterion_evidence[id].join('\n'):''; return `<label><b>${escapeHtml(item.text||id)}</b><textarea data-criterion-evidence="${idx}" data-criterion-id="${escapeHtml(id)}" placeholder="输入该标准对应的证据路径或说明">${escapeHtml(refs)}</textarea></label>`; }).join('')}<button class="primary" data-save-criterion-evidence="${idx}">保存成功标准证据</button></section>`:'';
   const materialCount=(task.materials||[]).filter(item=>item.type==='question').length;
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
   const evidenceBox=criterionBox || (materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`);
@@ -1448,6 +1448,18 @@ document.addEventListener('click', async e=>{
     setModalOpen($('#goalDetailsModal'),false);
     toast('目标已删除并归档');
     await load();
+    return;
+  }
+  const saveCriteria=e.target.closest?.('[data-save-criterion-evidence]');
+  if(saveCriteria){
+    const idx=+saveCriteria.dataset.saveCriterionEvidence;
+    const criterion_evidence={};
+    document.querySelectorAll(`[data-criterion-evidence=\"${idx}\"]`).forEach(input=>{
+      const values=input.value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+      if(values.length) criterion_evidence[input.dataset.criterionId]=values;
+    });
+    try{ await api('task-response',{idx,response:{criterion_evidence}}); state.tasks[idx].criterion_evidence=criterion_evidence; toast('成功标准证据已保存'); }
+    catch(err){ toast('保存成功标准证据失败：'+err.message,false); }
     return;
   }
   const openMaterials=e.target.closest?.('[data-open-materials]');

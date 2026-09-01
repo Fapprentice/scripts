@@ -923,7 +923,9 @@ def evaluate_task(task_idx):
             "next_steps": ["完成失败节点的最小验证任务"] if evaluated.get("attribution") else []})
     elif adaptive.requires_recall_rating(task, c) and not task.get("recall_rating"):
         raise ValueError("请先选择回忆质量：忘记、困难、正常或轻松")
-    if task.get("skill_id") and not adaptive.task_is_unlocked(c, task):
+    if task_kind in ("stage", "outcome"):
+        pass
+    elif task.get("skill_id") and not adaptive.task_is_unlocked(c, task):
         result=norm_acceptance_result({"pass":False,"reason":"硬先修未掌握，不能验收通过该技能节点",
             "missing":["硬先修"],"next_steps":["先完成硬先修再验收"]})
     elif not evidence and not response and task.get("verification_mode")!="none":
