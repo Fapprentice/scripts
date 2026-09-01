@@ -30,6 +30,13 @@ def _proposal(pack, minutes=25):
     }
 
 
+def test_stage_proposals_are_derived_only_from_bound_skill_pack():
+    state, pack = _ready_state()
+    proposals = learning.stage_proposals(state, {"outcome": "Python"})
+    assert [item["stage_id"] for item in proposals] == ["python.stage.control-flow"]
+    assert proposals[0]["required_skill_ids"] == ["python.control.branch", "python.control.loop"]
+
+
 def test_stage_candidate_requires_mastery_prerequisites_budget_and_valid_materials():
     state, pack = _ready_state()
     proposal = _proposal(pack)

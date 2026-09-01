@@ -751,7 +751,10 @@ def gen_tasks():
     settings=effective_gen_settings(c)
     if adaptive.is_learning_goal(g, details):
         planned=adaptive.plan_learning_tasks(c,g,details,settings.get("task_count",3))
-        outcome = adaptive.outcome_task(details, c)
+        stage_pool = adaptive.stage_candidate_pool(c, adaptive.stage_proposals(c, details), budget_minutes=settings.get("daily_minutes", 30))
+        planned.extend(stage_pool[:1])
+        required_stage_ids = [str(t.get("stage_id")) for t in stage_pool if t.get("stage_id")]
+        outcome = adaptive.outcome_task(details, c, required_stage_ids=required_stage_ids)
         if outcome.get("criterion_ids") and not any(t.get("task_kind") == "outcome" for t in planned):
             planned.append(outcome)
         if planned:

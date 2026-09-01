@@ -8,7 +8,7 @@ from datetime import datetime
 from learning import (SkillMap, ability_profile, diagnostic_dimensions, due_review_task, fallback_task_templates as learning_fallback_templates, initial_diagnostic_tasks, is_generic_planning_task, is_learning_goal, knowledge_graph, learning_focus, match_pack, merge_knowledge_graph, next_learning_task,
                       normalize_diagnostic_dimensions, plan_learning_tasks, propose_nodes, requires_recall_rating, set_diagnostic_dimensions,
                       task_consistency_issues, task_in_map, task_semantic_key,
-                      record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials, get_stage_template, validate_stage_template, validate_stage_proposal, instantiate_stage_task, evaluate_stage_outcome, stage_candidate_pool, record_stage_outcome, migrate_legacy_tasks, criterion_records, outcome_eligibility, outcome_task, evaluate_outcome)
+                      record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials, get_stage_template, validate_stage_template, validate_stage_proposal, instantiate_stage_task, evaluate_stage_outcome, stage_proposals, stage_candidate_pool, record_stage_outcome, migrate_legacy_tasks, criterion_records, outcome_eligibility, outcome_task, evaluate_outcome)
 from utils import task_actual_minutes
 
 

@@ -147,6 +147,34 @@ def _stage_learning_days(state, stage_id, now):
         return 0
 
 
+def stage_proposals(state, contract=None):
+    """Build proposals only from versioned Skill Pack stage templates."""
+    state = state if isinstance(state, dict) else {}
+    model = state.setdefault("user_model", {})
+    pack = resolve_pack(state, model.get("pack_id", ""), model.get("pack_version", ""))
+    proposals = []
+    for template in (pack or {}).get("stages") or []:
+        required = list(template.get("required_skill_ids") or [])
+        proposals.append({
+            "stage_id": template.get("id"),
+            "template_revision": template.get("template_revision"),
+            "pack_id": (pack or {}).get("id"),
+            "pack_version": (pack or {}).get("version"),
+            "title": template.get("title") or template.get("id"),
+            "description": template.get("integration_behavior", ""),
+            "required_skill_ids": required,
+            "supporting_skill_ids": [],
+            "materials": [{"id": "stage-input", "values": [1, 2, 3]}],
+            "estimated_minutes": min(30, max(5, int(template.get("estimated_minutes") or 25))),
+            "expected_output": template.get("outcome_shape", ""),
+            "acceptance": (template.get("evidence_contract") or {}).get("threshold", ""),
+            "integration_behavior": template.get("integration_behavior", ""),
+            "outcome_shape": template.get("outcome_shape", ""),
+            "skill_checks": dict(template.get("skill_checks") or {}),
+        })
+    return proposals
+
+
 def stage_candidate_pool(state, proposals, now=None, budget_minutes=30):
     """Return valid, qualified stage tasks ordered by explainable priority."""
     state = state if isinstance(state, dict) else {}
