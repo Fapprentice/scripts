@@ -111,7 +111,9 @@ def evaluate_stage_outcome(task, outcome):
     # when observations are supplied, every required skill must pass before the
     # result can remain passed. This keeps the stage seam backward compatible
     # without allowing partial observations to masquerade as a pass.
-    if status == "passed" and observations and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
+    if status == "passed" and task.get("observations_required") and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
+        status = "partial"
+    elif status == "passed" and observations and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
         status = "partial"
     attribution = []
     for skill_id in required:
@@ -226,6 +228,7 @@ def instantiate_stage_task(pack, stage_id, proposal):
     task = dict(proposal)
     task.update({"task_kind": "stage", "skill_id": "", "primary_skill_id": "", "evidence_target": "integration", "type": "challenge", "verification_mode": "strict", "source": "pack", "locked": False})
     task["evidence_contract"] = dict(template["evidence_contract"])
+    task["observations_required"] = True
     return task
 
 

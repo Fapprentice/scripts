@@ -97,6 +97,13 @@ def test_invalid_proposals_are_rejected(change):
         learning.instantiate_stage_task(pack, template["id"], proposal)
 
 
+def test_pack_stage_requires_observations_even_for_legacy_pass_input():
+    pack = _stage_pack(); template = learning.get_stage_template(pack, "python.stage.control-flow")
+    task = learning.instantiate_stage_task(pack, template["id"], _proposal(template))
+    result = learning.evaluate_stage_outcome(task, {"status": "passed", "evidence_refs": ["run.txt"]})
+    assert result["status"] == "partial"
+
+
 def test_stage_outcome_requires_all_required_skill_observations_for_pass():
     pack = _stage_pack()
     template = learning.get_stage_template(pack, "python.stage.control-flow")
