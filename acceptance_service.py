@@ -25,23 +25,35 @@ class AcceptanceService:
         flags[idx] = passed
         tasks[idx]["status"] = "done" if passed else tasks[idx].get("status") or "pending"
         state["tasks"], state["done_flags"] = tasks, flags
+        task_kind = str(tasks[idx].get("task_kind") or "").strip()
         if result["status"] == "failed":
             self.ensure_remediation(state, idx, result)
         if passed and self.outcome: self.outcome(state, "accepted")
         elif result["status"] == "failed" and self.outcome: self.outcome(state, "failed")
         if result["status"] in ("passed", "failed") and self.learning_outcome:
-            self.learning_outcome(state, state["tasks"][idx], passed)
-            try:
-                from learning import SkillMap
-                task = state["tasks"][idx]
-                if task.get("skill_id"):
-                    SkillMap(state, ok=True).apply_outcome(task["skill_id"], {
+            task = state["tasks"][idx]
+            # Only node tasks settle SkillMap mastery. Legacy single-skill tasks
+            # remain compatible; stage/outcome tasks must never leak into node settlement.
+            task_kind = str(task.get("task_kind") or "").strip()
+            primary_skill_id = str(task.get("primary_skill_id") or task.get("skill_id") or "").strip()
+            if task_kind in ("", "node") and primary_skill_id:
+                settlement_task = dict(task, task_kind="node", primary_skill_id=primary_skill_id,
+                                       skill_id=primary_skill_id)
+                try:
+                    self.learning_outcome(state, settlement_task, passed)
+                    from learning import SkillMap
+                    SkillMap(state, ok=True).apply_outcome(primary_skill_id, {
                         "task_passed": passed, "evidence": task.get("evidence") or task.get("response"),
                         "recall_rating": task.get("recall_rating"),
                     })
-            except Exception:
-                pass
-        if self.companion and result["status"] != "needs_review":
+                except Exception as exc:
+                    # Acceptance remains persisted, but settlement failure is visible
+                    # and auditable instead of silently creating mastery drift.
+                    self.event(state, "learning_settlement_error", str(exc),
+                               {"idx": idx, "skill_id": primary_skill_id})
+        # Stage/outcome evidence is not node mastery or companion growth.
+        # Their authoritative ledgers belong to later vertical slices.
+        if self.companion and result["status"] != "needs_review" and task_kind not in ("stage", "outcome"):
             self.companion(state, idx, result)
         self.sync_pct(state); self.save(state)
         self.event(state, "task_acceptance", result["status"], {"idx": idx, "status": result["status"]})

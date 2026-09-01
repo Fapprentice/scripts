@@ -68,6 +68,41 @@ def test_task_pass_without_node_contract_does_not_master_skill():
     assert skill.get("contract_met") is not True
 
 
+def test_node_outcome_settles_only_authoritative_primary_skill():
+    state = {"user_model": {}}
+    learning.SkillMap.load(state, {
+        "outcome": "写出可运行的 Python 小程序",
+        "success_criteria": ["程序可运行"], "baseline": "",
+    })
+    task = {"task_kind": "node", "primary_skill_id": "python.control.loop",
+            "skill_id": "stale.legacy", "supporting_skill_ids": ["python.syntax.names"],
+            "evidence_target": "mastery", "evidence": ["loop.py"]}
+    learning.record_learning_outcome(state, task, True, NOW)
+    assert state["user_model"]["skills"]["python.control.loop"]["contract_met"] is True
+    assert "stale.legacy" not in state["user_model"]["skills"]
+    assert state["user_model"]["skills"]["python.syntax.names"].get("contract_met") is not True
+
+
+def test_node_task_rejects_unqualified_supporting_skill():
+    state = {"user_model": {"skills": {
+        "primary": {"mastery": 0.0, "reviews": 0, "prerequisites": []},
+        "support": {"mastery": 0.0, "reviews": 0, "prerequisites": []},
+    }}}
+    task = {"task_kind": "node", "primary_skill_id": "primary",
+            "skill_id": "primary", "supporting_skill_ids": ["support"]}
+    assert learning.task_is_unlocked(state, task) is False
+    state["user_model"]["skills"]["support"]["contract_met"] = True
+    assert learning.task_is_unlocked(state, task) is True
+
+
+def test_non_node_task_cannot_settle_skill_mastery():
+    state = {"user_model": {"skills": {"python.control.loop": {"demonstration": "practice"}}}}
+    task = {"task_kind": "legacy", "primary_skill_id": "python.control.loop",
+            "skill_id": "python.control.loop", "evidence": ["loop.py"]}
+    assert learning.record_learning_outcome(state, task, True, NOW) is None
+    assert state["user_model"]["skills"]["python.control.loop"].get("contract_met") is not True
+
+
 def test_recall_rating_only_required_for_recall_demonstration():
     state = {"user_model": {}}
     skill_map = learning.SkillMap.load(state, CET4)
@@ -109,6 +144,32 @@ def test_coverage_requires_sinks_for_success_criteria():
     assert "口语达到考试要求" in skill_map.gaps
 
 
+def test_all_learning_task_constructors_emit_node_compatibility_contract():
+    state = {"user_model": {"skills": {"loops": {"mastery": 0.0, "reviews": 0, "prerequisites": []}}}}
+    scheduled = learning.next_learning_task(state, NOW)
+    assert scheduled["task_kind"] == "node"
+    assert scheduled["primary_skill_id"] == scheduled["skill_id"] == "loops"
+    assert scheduled["supporting_skill_ids"] == []
+    assert scheduled["evidence_target"] == "mastery"
+
+    diagnostic = learning.initial_diagnostic_tasks({"user_model": {}}, "普通学习目标", 1)[0]
+    assert diagnostic["task_kind"] == "node"
+    assert diagnostic["primary_skill_id"] == diagnostic["skill_id"]
+    assert diagnostic["supporting_skill_ids"] == []
+    assert diagnostic["evidence_target"] == "mastery"
+
+
+def test_due_review_constructor_emits_node_compatibility_contract():
+    state = {"user_model": {"skills": {"loops": {
+        "mastery": 1.0, "contract_met": True, "reviews": 1, "prerequisites": [],
+        "review_due_at": "2025-12-01T00:00:00+00:00"}}}}
+    task = learning.due_review_task(state, NOW)
+    assert task["task_kind"] == "node"
+    assert task["primary_skill_id"] == task["skill_id"] == "loops"
+    assert task["supporting_skill_ids"] == []
+    assert task["evidence_target"] == "mastery"
+
+
 def test_plan_learning_tasks_uses_pack_frontier():
     state = {"user_model": {}}
     tasks = learning.plan_learning_tasks(state, "英语四级", CET4, 3)
@@ -118,13 +179,11 @@ def test_plan_learning_tasks_uses_pack_frontier():
     assert all(task.get("source") in ("pack", "ability_diagnostic") for task in tasks)
 
 
-def test_uncovered_learning_goal_plans_map_patch_only():
+def test_uncovered_learning_goal_does_not_expose_map_patch_task():
     state = {"user_model": {}}
     tasks = learning.plan_learning_tasks(
         state, "掌握日语五十音", {"outcome": "掌握日语五十音", "success_criteria": ["能默写五十音"]}, 3)
-    assert len(tasks) == 1
-    assert tasks[0]["source"] == "map_patch"
-    assert not tasks[0].get("skill_id")
+    assert tasks == []
 
 
 def test_confirmed_wrong_direction_demotes_hard_edge_without_lowering_contract():
@@ -176,6 +235,18 @@ def test_ai_proposal_extends_pack_without_changing_version_or_pack_edges():
     assert "cet4.writing.speech" in state["user_model"]["skills"]
     outline_kind = state["user_model"]["skills"]["cet4.writing.essay"]["prerequisite_meta"]["cet4.writing.outline"]["kind"]
     assert outline_kind == "hard"
+
+
+def test_ai_proposal_rejects_incomplete_mastery_evidence_contract():
+    state = {"user_model": {}}
+    learning.SkillMap.load(state, CET4)
+    result = learning.propose_nodes(state, {"pack_id": "cet4", "pack_version": "v1", "nodes": [{
+        "id": "cet4.extra", "title": "额外", "core_behavior": "独立完成额外能力",
+        "mastery_evidence": {"behavior": "提交结果", "threshold": "结果可核验"},
+        "prerequisites": [],
+    }]})
+    assert result.get("error") == "node_contract"
+    assert "cet4.extra" not in state["user_model"]["skills"]
 
 
 def test_ai_proposal_rejects_pack_version_mismatch_and_missing_contract():

@@ -19,6 +19,7 @@ Skill packs (`cet4`, `python-intro`) are hand-written templates. AI may propose 
 ## Consequences
 
 - `learning.py` exposes a small SkillMap interface; `adaptive` and generation call that interface.
-- Empty or uncovered maps block ordinary learning-task generation.
+- Empty or uncovered maps block ordinary learning-task generation. Coverage repair is an internal system/AI action and is never dispatched as a user task.
+- Node, stage, and outcome evidence are separated by [[0002-staged-learning-evidence.md]].
 - Recall ratings apply only to recall demonstrations.
 - Goal success criteria still cannot be lowered by feedback; feedback may only change the route on the map.

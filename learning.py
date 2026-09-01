@@ -23,17 +23,344 @@ def load_packs():
     return _PACK_CACHE
 
 
-def match_pack(contract):
+def _version_key(version):
+    match = re.fullmatch(r"v(\d+)", str(version or "").strip())
+    return int(match.group(1)) if match else -1
+
+
+def resolve_pack(state=None, pack_id="", pack_version=""):
+    """Resolve a goal's immutable bound pack, or the latest pack for a new goal."""
+    model = (state or {}).get("user_model") if isinstance(state, dict) else {}
+    model = model if isinstance(model, dict) else {}
+    wanted_id = str(pack_id or model.get("pack_id") or "").strip()
+    wanted_version = str(pack_version or model.get("pack_version") or "").strip()
+    candidates = [pack for pack in load_packs() if not wanted_id or str(pack.get("id") or "") == wanted_id]
+    if wanted_version:
+        return next((pack for pack in candidates if str(pack.get("version") or "") == wanted_version), None)
+    return max(candidates, key=lambda pack: _version_key(pack.get("version")), default=None)
+
+
+def get_stage_template(pack, stage_id):
+    if not isinstance(pack, dict):
+        return None
+    wanted = str(stage_id or "").strip()
+    return next((stage for stage in pack.get("stages") or [] if isinstance(stage, dict) and str(stage.get("id") or "").strip() == wanted), None)
+
+
+def validate_stage_template(pack, template):
+    errors = []
+    if not isinstance(pack, dict) or not isinstance(template, dict):
+        return ["pack and template must be objects"]
+    node_ids = {str(node.get("id") or "") for node in pack.get("nodes") or [] if isinstance(node, dict)}
+    required = [str(item).strip() for item in template.get("required_skill_ids") or [] if str(item).strip()]
+    optional = [str(item).strip() for item in template.get("optional_skill_ids") or [] if str(item).strip()]
+    forbidden = [str(item).strip() for item in template.get("forbidden_skill_ids") or [] if str(item).strip()]
+    if not str(template.get("id") or "").strip(): errors.append("stage id is required")
+    if not isinstance(template.get("template_revision"), int) or template.get("template_revision", 0) < 1: errors.append("template revision is required")
+    if not 2 <= len(required) <= 4 or len(required) != len(set(required)): errors.append("required skills must contain 2-4 unique ids")
+    if any(skill_id not in node_ids for skill_id in required + optional + forbidden): errors.append("stage references unknown skills")
+    if set(required) & (set(optional) | set(forbidden)): errors.append("stage skill sets must not overlap")
+    checks = template.get("skill_checks") if isinstance(template.get("skill_checks"), dict) else {}
+    if set(checks) != set(required) or any(not str(checks.get(skill_id) or "").strip() for skill_id in required): errors.append("skill checks must exactly cover required skills")
+    evidence = template.get("evidence_contract") if isinstance(template.get("evidence_contract"), dict) else {}
+    for field in ("integration_behavior", "outcome_shape"):
+        if not str(template.get(field) or "").strip(): errors.append(field + " is required")
+    if any(not str(evidence.get(field) or "").strip() for field in ("behavior", "threshold", "counterexample")): errors.append("complete evidence contract is required")
+    if not isinstance(template.get("max_supporting_skills"), int) or template.get("max_supporting_skills", -1) < 0: errors.append("max supporting skills is invalid")
+    if not isinstance(template.get("required_attributes"), list) or not isinstance(template.get("optional_attributes"), list): errors.append("attribute declarations are required")
+    return errors
+
+
+def validate_stage_proposal(pack, template, proposal):
+    errors = list(validate_stage_template(pack, template))
+    if not isinstance(proposal, dict): return errors + ["proposal must be an object"]
+    exact = {"stage_id": template.get("id"), "template_revision": template.get("template_revision"), "pack_id": pack.get("id"), "pack_version": pack.get("version"), "required_skill_ids": template.get("required_skill_ids"), "integration_behavior": template.get("integration_behavior"), "outcome_shape": template.get("outcome_shape"), "skill_checks": template.get("skill_checks")}
+    for field, expected in exact.items():
+        if proposal.get(field) != expected: errors.append(field + " does not match template")
+    supporting = [str(item).strip() for item in proposal.get("supporting_skill_ids") or [] if str(item).strip()]
+    allowed = set(template.get("optional_skill_ids") or [])
+    required = set(template.get("required_skill_ids") or [])
+    forbidden = set(template.get("forbidden_skill_ids") or [])
+    if len(supporting) != len(set(supporting)) or any(item in required or item in forbidden for item in supporting):
+        errors.append("supporting skills overlap required or forbidden skills")
+    if len(supporting) > template.get("max_supporting_skills", 0) or any(item not in allowed for item in supporting): errors.append("supporting skills exceed template bounds")
+    if any(item in forbidden for item in proposal.get("required_skill_ids") or []):
+        errors.append("proposal requires forbidden skills")
+    materials = proposal.get("materials")
+    if not isinstance(materials, list) or not materials or any(not isinstance(item, dict) or not item for item in materials):
+        errors.append("materials must be a non-empty list of objects")
+    for field in template.get("required_attributes") or []:
+        value = proposal.get(field)
+        if value is None or value == "" or value == [] or value == {}: errors.append(field + " is required")
+    return errors
+
+
+def evaluate_stage_outcome(task, outcome):
+    """Evaluate a stage submission without mutating authoritative learning state."""
+    task = task if isinstance(task, dict) else {}
+    outcome = outcome if isinstance(outcome, dict) else {}
+    status = str(outcome.get("status") or "").strip()
+    allowed = {"passed", "failed", "partial", "blocked", "needs_review"}
+    if status not in allowed:
+        return {"status": "needs_review", "reason": "invalid stage status", "skill_observations": []}
+    observations = outcome.get("skill_observations")
+    observations = observations if isinstance(observations, list) else []
+    required = [str(item).strip() for item in task.get("required_skill_ids") or [] if str(item).strip()]
+    by_skill = {str(item.get("skill_id") or "").strip(): item for item in observations if isinstance(item, dict)}
+    # Legacy stage submissions may carry only a unified evidence reference;
+    # when observations are supplied, every required skill must pass before the
+    # result can remain passed. This keeps the stage seam backward compatible
+    # without allowing partial observations to masquerade as a pass.
+    if status == "passed" and observations and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
+        status = "partial"
+    attribution = []
+    for skill_id in required:
+        item = by_skill.get(skill_id)
+        if item and str(item.get("status") or "") in ("failed", "blocked"):
+            attribution.append({"skill_id": skill_id, "status": str(item.get("status")), "reason": str(item.get("reason") or "该节点观察点未通过")})
+    return {"status": status, "reason": str(outcome.get("reason") or ""),
+            "skill_observations": observations, "attribution": attribution,
+            "evidence_refs": list(outcome.get("evidence_refs") or []) if isinstance(outcome.get("evidence_refs"), list) else []}
+
+
+def _stage_due_days(skill, now):
+    due_at = skill.get("review_due_at")
+    if not due_at:
+        return 0
+    try:
+        return max(0, int((_utc(now) - datetime.fromisoformat(due_at).astimezone(timezone.utc)).total_seconds() // 86400))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stage_learning_days(state, stage_id, now):
+    model = state.setdefault("user_model", {})
+    first_seen = model.setdefault("stage_first_eligible_at", {})
+    key = str(stage_id or "")
+    current = _utc(now)
+    if key not in first_seen:
+        first_seen[key] = current.isoformat()
+        return 0
+    try:
+        return max(0, int((current - datetime.fromisoformat(first_seen[key]).astimezone(timezone.utc)).total_seconds() // 86400))
+    except (TypeError, ValueError):
+        return 0
+
+
+def stage_candidate_pool(state, proposals, now=None, budget_minutes=30):
+    """Return valid, qualified stage tasks ordered by explainable priority."""
+    state = state if isinstance(state, dict) else {}
+    model = state.setdefault("user_model", {})
+    pack = resolve_pack(state, model.get("pack_id", ""), model.get("pack_version", ""))
+    if not pack:
+        return []
+    now_dt = _utc(now)
+    try:
+        budget = float(budget_minutes)
+    except (TypeError, ValueError):
+        budget = 0
+    candidates = []
+    for proposal in proposals or []:
+        template = get_stage_template(pack, (proposal or {}).get("stage_id"))
+        if not template or validate_stage_proposal(pack, template, proposal):
+            continue
+        minutes = float(proposal.get("estimated_minutes") or 0)
+        if minutes <= 0 or minutes > budget:
+            continue
+        skills = _skills(state)
+        blocked = False
+        score = 45
+        for skill_id in template.get("required_skill_ids") or []:
+            skill = skills.get(skill_id) or {}
+            if not skill.get("contract_met") or not _ready(skills, skill):
+                blocked = True
+                break
+            if _stage_due_days(skill, now_dt) >= 3:
+                blocked = True
+                break
+        if blocked:
+            continue
+        learning_days = _stage_learning_days(state, template["id"], now_dt)
+        score += min(30, learning_days * 10)
+        task = instantiate_stage_task(pack, template["id"], proposal)
+        task["eligible_learning_days"] = learning_days
+        task["stage_score"] = score
+        task["stage_score_reason"] = "新合格 required stage 45 + 等待学习日修正 {}".format(min(30, learning_days * 10))
+        candidates.append(task)
+    return sorted(candidates, key=lambda item: (-item["stage_score"], str(item.get("stage_id") or "")))
+
+
+def instantiate_stage_task(pack, stage_id, proposal):
+    template = get_stage_template(pack, stage_id)
+    if not template: raise ValueError("unknown stage template")
+    errors = validate_stage_proposal(pack, template, proposal)
+    if errors: raise ValueError("invalid stage proposal: " + "; ".join(errors))
+    task = dict(proposal)
+    task.update({"task_kind": "stage", "skill_id": "", "primary_skill_id": "", "evidence_target": "integration", "type": "challenge", "verification_mode": "strict", "source": "pack", "locked": True})
+    task["evidence_contract"] = dict(template["evidence_contract"])
+    return task
+
+
+def record_stage_outcome(state, task, outcome, now=None):
+    """Persist integration evidence without changing node mastery."""
+    state = state if isinstance(state, dict) else {}
+    task = task if isinstance(task, dict) else {}
+    result = evaluate_stage_outcome(task, outcome)
+    evidence = state.setdefault("user_model", {}).setdefault("integration_evidence", [])
+    task_id = str(task.get("id") or task.get("stage_id") or "stage")
+    existing = next((item for item in evidence if item.get("task_id") == task_id), None)
+    if existing:
+        return existing
+    record = dict(result, task_id=task_id, stage_id=task.get("stage_id", ""),
+                  ts=_utc(now).isoformat())
+    evidence.append(record)
+    events = state.setdefault("events", [])
+    if result["status"] == "passed":
+        if not any(event.get("kind") == "stage_completed" and event.get("task_id") == task_id for event in events if isinstance(event, dict)):
+            events.append({"kind": "stage_completed", "task_id": task_id, "stage_id": task.get("stage_id", ""), "ts": _utc(now).isoformat()})
+    return record
+
+
+def migrate_legacy_tasks(state):
+    """Deterministically remove unfinished map repairs from the user queue."""
+    if not isinstance(state, dict):
+        return {"migrated": [], "kept": []}
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+    flags = state.get("done_flags") if isinstance(state.get("done_flags"), list) else []
+    events = state.setdefault("events", [])
+    existing = {str(item.get("task_id")) for item in events if isinstance(item, dict) and item.get("kind") == "task_migrated_out"}
+    kept, kept_flags, migrated = [], [], []
+    for index, task in enumerate(tasks):
+        task = task if isinstance(task, dict) else {}
+        task_id = str(task.get("id") or "legacy-task-{}".format(index))
+        done = bool(task.get("status") == "done" or task.get("done") or (index < len(flags) and flags[index]))
+        if str(task.get("source") or "").strip() == "map_patch" and not done:
+            migrated.append(task_id)
+            if task_id not in existing:
+                events.append({"kind": "task_migrated_out", "task_id": task_id,
+                               "reason": "地图修复转为内部规划动作"})
+            state.setdefault("internal_map_repairs", []).append({"task_id": task_id, "task": dict(task)})
+            continue
+        kept.append(task); kept_flags.append(done)
+    state["tasks"], state["done_flags"] = kept, kept_flags
+    state["events"] = events[-300:]
+    return {"migrated": migrated, "kept": [str(item.get("id") or "") for item in kept]}
+
+
+def criterion_records(criteria):
+    """Create deterministic criterion ids for an outcome contract."""
+    import hashlib
+    rows = []
+    for value in criteria or []:
+        text = str(value or "").strip()
+        if text:
+            rows.append({"id": "criterion-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:10], "text": text})
+    return rows
+
+
+def outcome_eligibility(state, contract, required_stage_ids=()):
+    """Return outcome gates without mutating the SkillMap."""
+    contract = contract if isinstance(contract, dict) else {}
+    criteria = criterion_records(contract.get("success_criteria") or [])
+    skills = _skills(state)
+    missing_skills = []
+    required_skill_ids = [str(item).strip() for item in (contract.get("required_skill_ids") or (state.get("_required_outcome_skills") if isinstance(state, dict) else []) or []) if str(item).strip()]
+    for skill_id in required_skill_ids:
+        skill = skills.get(skill_id) or {}
+        if not skill.get("contract_met"):
+            missing_skills.append(skill_id)
+    if not required_skill_ids:
+        pack = resolve_pack(state) if isinstance(state, dict) else None
+        for criterion in contract.get("success_criteria") or []:
+            text = str(criterion or "").strip()
+            for sink_id in (pack or {}).get("covers", {}).get(text, []):
+                if sink_id not in required_skill_ids:
+                    required_skill_ids.append(sink_id)
+        for skill_id, skill in skills.items():
+            if skill.get("required_for_outcome") and skill_id not in required_skill_ids:
+                required_skill_ids.append(skill_id)
+        for skill_id in required_skill_ids:
+            if not (skills.get(skill_id) or {}).get("contract_met"):
+                missing_skills.append(skill_id)
+    missing_stages = []
+    integration = (state.get("user_model") or {}).get("integration_evidence", [])
+    passed_stages = {item.get("stage_id") for item in integration if item.get("status") == "passed"}
+    missing_stages = [stage_id for stage_id in required_stage_ids if stage_id not in passed_stages]
+    eligible = bool(criteria) and not missing_skills and not missing_stages
+    return {"eligible": eligible, "criteria": criteria, "required_skill_ids": required_skill_ids,
+            "missing_skill_ids": list(dict.fromkeys(missing_skills)), "missing_stage_ids": missing_stages}
+
+
+def outcome_task(contract, state=None, required_skill_ids=(), required_stage_ids=()):
+    """Build a persistent outcome task with criterion-level evidence slots."""
+    contract = contract if isinstance(contract, dict) else {}
+    criteria = criterion_records(contract.get("success_criteria") or [])
+    required_skill_ids = [str(x).strip() for x in required_skill_ids if str(x).strip()]
+    gates = outcome_eligibility({**(state or {}), "_required_outcome_skills": required_skill_ids}, contract, required_stage_ids)
+    return {"task_kind": "outcome", "type": "outcome", "evidence_target": "criterion",
+            "title": str(contract.get("outcome") or "最终成果验收"),
+            "description": "直接提交最终成果，并为每条成功标准提供独立证据。",
+            "criterion_ids": [item["id"] for item in criteria],
+            "criteria": criteria, "required_skill_ids": gates.get("required_skill_ids", required_skill_ids),
+            "required_stage_ids": list(required_stage_ids), "eligibility": gates,
+            "status": "pending", "locked": not gates["eligible"],
+            "evidence": [], "criterion_evidence": {}}
+
+
+def outcome_failure_trace(task, failed_criterion_ids, state=None):
+    """Return the smallest actionable recovery chain without mutating mastery."""
+    task = task if isinstance(task, dict) else {}
+    failed = [str(item).strip() for item in failed_criterion_ids or [] if str(item).strip()]
+    trace = []
+    for criterion_id in failed:
+        row = next((item for item in task.get("criteria") or [] if isinstance(item, dict) and item.get("id") == criterion_id), {})
+        trace.append({"criterion_id": criterion_id, "criterion": row.get("text", ""),
+                      "next_action": "补充该成功标准对应的最小独立证据",
+                      "task_kind": "diagnostic", "evidence_target": "criterion"})
+    return trace
+
+
+def evaluate_outcome(task, outcome):
+    task = task if isinstance(task, dict) else {}
+    outcome = outcome if isinstance(outcome, dict) else {}
+    criteria = [item for item in task.get("criteria") or [] if isinstance(item, dict) and item.get("id")]
+    evidence = outcome.get("criterion_evidence") if isinstance(outcome.get("criterion_evidence"), dict) else {}
+    rows = []
+    for criterion in criteria:
+        value = evidence.get(criterion["id"])
+        refs = value if isinstance(value, list) else ([value] if value else [])
+        rows.append({"criterion_id": criterion["id"], "passed": bool(refs), "evidence_refs": refs, "text": criterion.get("text", "")})
+    status = "passed" if rows and all(row["passed"] for row in rows) else "failed"
+    failed = [row["criterion_id"] for row in rows if not row["passed"]]
+    return {"status": status, "criterion_results": rows, "failed_criterion_ids": failed,
+            "next_actions": ["补充缺失成功标准的独立证据"] if failed else [],
+            "failure_trace": outcome_failure_trace(task, failed),
+            "evidence_target": "criterion"}
+
+
+def _pack_is_stable(pack):
+    # Published packs predate explicit release metadata and are stable by
+    # default. A future draft/prerelease must opt out explicitly.
+    return str((pack or {}).get("release_status") or "stable").strip().casefold() == "stable"
+
+
+def match_pack(contract, state=None):
     contract = contract if isinstance(contract, dict) else {}
     text = " ".join([
         str(contract.get("outcome") or ""),
         str(contract.get("baseline") or ""),
         " ".join(str(item) for item in (contract.get("success_criteria") or [])),
     ]).casefold()
-    for pack in load_packs():
-        if any(str(token).casefold() in text for token in pack.get("match") or []):
-            return pack
-    return None
+    matching_ids = {str(pack.get("id") or "") for pack in load_packs()
+                    if any(str(token).casefold() in text for token in pack.get("match") or [])}
+    model = (state or {}).get("user_model") if isinstance(state, dict) else {}
+    model = model if isinstance(model, dict) else {}
+    bound_id = str(model.get("pack_id") or "").strip()
+    bound_version = str(model.get("pack_version") or "").strip()
+    if bound_id in matching_ids and bound_version:
+        return resolve_pack(state, pack_id=bound_id)
+    candidates = [pack for pack in load_packs() if str(pack.get("id") or "") in matching_ids and _pack_is_stable(pack)]
+    return max(candidates, key=lambda pack: _version_key(pack.get("version")), default=None)
 
 
 def is_learning_goal(goal, contract=None):
@@ -103,7 +430,7 @@ def fallback_task_templates(goal):
     if not any(word in folded for word in learning_words):
         return []
     if any(word in folded for word in ("英语", "四级", "六级", "词汇", "cet", "ielts", "toefl")):
-        return [
+        return [_node_task_contract(task) for task in [
             {"title": "闭卷默写 10 个目标词汇", "description": "不查资料写出英文、中文释义和一个例句。",
              "type": "recall", "learning_task_type": "recall", "skill_id": "english.vocabulary",
              "estimated_minutes": 15, "expected_output": "10 个词汇、释义和例句",
@@ -120,8 +447,8 @@ def fallback_task_templates(goal):
              "estimated_minutes": 25, "expected_output": "听写文本、修正记录和三条复述要点",
              "acceptance": "完成听写核对，并准确复述至少三条信息",
              "materials": _diagnostic_materials("english.listening")[0], "interaction": {"type":"text"}},
-        ]
-    return [
+        ]]
+    return [_node_task_contract(task) for task in [
         {"title": "闭卷写出 5 个核心知识点", "description": "不查资料写出定义、用途和一个例子。",
          "type": "recall", "learning_task_type": "recall", "skill_id": "learning.core",
          "estimated_minutes": 15, "expected_output": "5 个知识点及对应例子",
@@ -134,7 +461,7 @@ def fallback_task_templates(goal):
          "type": "explain", "learning_task_type": "explain", "skill_id": "learning.explain",
          "estimated_minutes": 20, "expected_output": "一段讲解和一个原创例子",
          "acceptance": "讲解包含原理、适用条件和可验证例子"},
-    ]
+    ]]
 
 
 def is_generic_planning_task(goal, task):
@@ -315,7 +642,8 @@ def plan_learning_tasks(state, goal, contract=None, limit=3, now=None):
     contract = contract if isinstance(contract, dict) else {"outcome": goal, "success_criteria": [goal], "baseline": ""}
     skill_map = SkillMap.load(state, contract)
     if not skill_map.ok:
-        return [skill_map.next_task(now=now)]
+        # Do not leak the internal map-repair action into the user queue.
+        return []
     limit = max(1, int(limit or 1))
     tasks = []
     seen = set()
@@ -362,10 +690,11 @@ def initial_diagnostic_tasks(state, goal, limit=3):
     for item in diagnostic_dimensions(goal, state):
         if item["skill_id"] not in missing: continue
         materials, interaction = _diagnostic_materials(item["skill_id"])
-        tasks.append(dict(item, materials=item.get("materials") or materials,
-                          interaction=item.get("interaction") or interaction, type="diagnostic",
-                          learning_task_type="diagnostic", difficulty=2, verification_mode="strict",
-                          source="ability_diagnostic", locked=True))
+        tasks.append(_node_task_contract(dict(
+            item, materials=item.get("materials") or materials,
+            interaction=item.get("interaction") or interaction, type="diagnostic",
+            learning_task_type="diagnostic", difficulty=2, verification_mode="strict",
+            source="ability_diagnostic", locked=True)))
     return [ensure_task_materials(task) for task in tasks[:max(1, int(limit or 1))]]
 
 
@@ -430,6 +759,55 @@ def _contract_satisfied(skill, payload):
     return passed
 
 
+def _node_task_contract(task):
+    """Attach the Slice 1 node contract and legacy skill mirror."""
+    task = dict(task or {})
+    primary_skill_id = str(task.get("primary_skill_id") or task.get("skill_id") or "").strip()
+    supporting = []
+    for item in task.get("supporting_skill_ids") or []:
+        item = str(item or "").strip()
+        if item and item != primary_skill_id and item not in supporting:
+            supporting.append(item)
+    evidence = task.get("mastery_evidence") if isinstance(task.get("mastery_evidence"), dict) else {}
+    task.update({
+        "task_kind": "node",
+        "primary_skill_id": primary_skill_id,
+        "skill_id": primary_skill_id,
+        "supporting_skill_ids": supporting,
+        "evidence_target": "mastery",
+        "core_behavior": str(task.get("core_behavior") or evidence.get("behavior") or "").strip(),
+        "estimated_verification_minutes": int(task.get("estimated_verification_minutes") or task.get("estimated_minutes") or 20),
+        "contract_revision": int(task.get("contract_revision") or 1),
+        "mastery_evidence": dict(evidence),
+    })
+    return task
+
+
+def _supporting_skills_ready(state, task, now=None):
+    skills = _skills(state)
+    now_dt = _utc(now)
+    primary = str(task.get("primary_skill_id") or task.get("skill_id") or "").strip()
+    for supporting_id in task.get("supporting_skill_ids") or []:
+        supporting_id = str(supporting_id or "").strip()
+        if not supporting_id or supporting_id == primary:
+            return False
+        skill = skills.get(supporting_id) or {}
+        if not skill.get("contract_met") and skill.get("band") != "skipped":
+            return False
+        try:
+            due = bool(skill.get("review_due_at")) and datetime.fromisoformat(skill["review_due_at"]).astimezone(timezone.utc) <= now_dt
+        except (TypeError, ValueError):
+            due = False
+        if due:
+            try:
+                overdue_days = (now_dt - datetime.fromisoformat(skill["review_due_at"]).astimezone(timezone.utc)).total_seconds() / 86400
+            except (TypeError, ValueError):
+                overdue_days = 0
+            if overdue_days >= 3:
+                return False
+    return True
+
+
 def _task_from_skill(skill_id, skill, source="graph_scheduler"):
     evidence = skill.get("mastery_evidence") if isinstance(skill.get("mastery_evidence"), dict) else {}
     demonstration = str(skill.get("demonstration") or "recall")
@@ -445,7 +823,9 @@ def _task_from_skill(skill_id, skill, source="graph_scheduler"):
     return {
         "title": "{}：{}".format(labels.get(task_type, "学习"), name),
         "description": description,
-        "type": "learn", "learning_task_type": task_type, "skill_id": skill_id,
+        "type": "learn", "learning_task_type": task_type, "task_kind": "node",
+        "skill_id": skill_id, "primary_skill_id": skill_id, "supporting_skill_ids": [],
+        "evidence_target": "mastery",
         "prerequisites": list(skill.get("prerequisites", []) or []),
         "estimated_minutes": 15 if task_type == "diagnostic" else 20,
         "difficulty": max(1, min(5, round(float(skill.get("difficulty", 5) or 5) / 2))),
@@ -488,6 +868,9 @@ def _bind_pack(state, pack):
         skill["description"] = str(node.get("description") or "")
         skill["demonstration"] = str(node.get("demonstration") or "recall")
         skill["mastery_evidence"] = node.get("mastery_evidence") if isinstance(node.get("mastery_evidence"), dict) else {}
+        skill["core_behavior"] = str(node.get("core_behavior") or skill["mastery_evidence"].get("behavior") or "").strip()
+        skill["estimated_verification_minutes"] = int(node.get("estimated_verification_minutes") or 20)
+        skill["contract_revision"] = int(node.get("contract_revision") or 1)
         skill["pack_id"] = pack.get("id", "")
         skill["pack_version"] = pack.get("version", "")
         meta = skill.setdefault("prerequisite_meta", {})
@@ -572,7 +955,7 @@ class SkillMap:
     def load(cls, state, contract):
         state = state if isinstance(state, dict) else {}
         contract = contract if isinstance(contract, dict) else {}
-        pack = match_pack(contract)
+        pack = match_pack(contract, state)
         if not pack:
             return cls(state, contract, pack=None, ok=False, error="uncovered")
         _bind_pack(state, pack)
@@ -599,15 +982,8 @@ class SkillMap:
 
     def next_task(self, now=None, skill_id=None):
         if not self.ok:
-            return {
-                "title": "补全技能地图",
-                "description": "先补齐能推出最终成果的技能节点和先修，再生成今日学习任务。",
-                "type": "plan", "learning_task_type": "map_patch", "skill_id": "",
-                "prerequisites": [], "estimated_minutes": 15, "difficulty": 1,
-                "expected_output": "一张覆盖最终成果的技能地图",
-                "acceptance": "汇点能推出成功标准，且每条先修都有类型和理由",
-                "verification_mode": "strict", "source": "map_patch", "locked": True,
-            }
+            # Coverage repair is an internal AI planning action, never a user task.
+            return None
         if skill_id:
             skill = _skills(self.state).get(skill_id)
             return _task_from_skill(skill_id, skill or {}, source="pack") if skill else None
@@ -824,7 +1200,9 @@ def propose_nodes(state, proposal):
             return {"error": "duplicate_id", "nodes": [], "edges": []}
         seen_ids.add(skill_id)
         evidence = node.get("mastery_evidence") if isinstance(node.get("mastery_evidence"), dict) else {}
-        if not str(evidence.get("threshold") or "").strip():
+        if any(not str(evidence.get(field) or "").strip() for field in ("behavior", "threshold", "counterexample")):
+            return {"error": "node_contract", "nodes": [], "edges": []}
+        if not str(node.get("core_behavior") or evidence.get("behavior") or "").strip():
             return {"error": "node_contract", "nodes": [], "edges": []}
         extras.append(node)
     if _proposed_graph_has_cycle(extras + [{"id": skill_id, "prerequisites": skill.get("prerequisites", [])}
@@ -893,8 +1271,15 @@ def merge_knowledge_graph(state, raw):
 
 
 def task_is_unlocked(state, task):
+    task = task if isinstance(task, dict) else {}
+    primary = str(task.get("primary_skill_id") or task.get("skill_id") or "").strip()
+    # Stage/outcome/legacy tasks have their own gates; Slice 1 only gates nodes.
+    if not primary or str(task.get("task_kind") or "node").strip() != "node":
+        return True
     skill = sync_task_graph(state, task)
-    return skill is None or _ready(_skills(state), skill)
+    if skill is None or not _ready(_skills(state), skill):
+        return False
+    return _supporting_skills_ready(state, task)
 
 
 def _rating(state, task, passed):
@@ -914,8 +1299,24 @@ def _rating(state, task, passed):
 
 
 def record_learning_outcome(state, task, passed, now=None):
-    """Review one knowledge component through the official FSRS scheduler."""
-    skill = sync_task_graph(state, task)
+    """Review only a node task's primary skill through the FSRS scheduler.
+
+    Raw legacy callers with one ``skill_id`` remain compatible. An explicit
+    non-node kind is never allowed to settle mastery, and supporting skills are
+    deliberately ignored.
+    """
+    task = task if isinstance(task, dict) else {}
+    declared_kind = str(task.get("task_kind") or "").strip()
+    primary_skill_id = str(task.get("primary_skill_id") or task.get("skill_id") or "").strip()
+    if not primary_skill_id or (declared_kind and declared_kind != "node"):
+        return None
+    settlement_task = dict(task, skill_id=primary_skill_id, primary_skill_id=primary_skill_id, task_kind="node")
+    skill = sync_task_graph(state, settlement_task)
+    task = _node_task_contract(dict(settlement_task,
+                                    core_behavior=skill.get("core_behavior"),
+                                    estimated_verification_minutes=skill.get("estimated_verification_minutes"),
+                                    contract_revision=skill.get("contract_revision"),
+                                    mastery_evidence=skill.get("mastery_evidence")))
     if skill is None:
         return None
     scheduler = _scheduler(state)
@@ -930,8 +1331,8 @@ def record_learning_outcome(state, task, passed, now=None):
     recalled = passed and rating != Rating.Again
     demonstration = str(skill.get("demonstration") or "")
     if demonstration in ("practice", "explain", "deliverable"):
-        met = _contract_satisfied(skill, {"task_passed": passed, "evidence": task.get("evidence"),
-                                         "recall_rating": task.get("recall_rating")})
+        met = _contract_satisfied(skill, {"task_passed": passed, "evidence": settlement_task.get("evidence"),
+                                         "recall_rating": settlement_task.get("recall_rating")})
         skill["contract_met"] = met
         mastery_value = 1.0 if met else 0.0
     else:
@@ -1004,7 +1405,7 @@ def due_review_task(state, now=None):
     if focus.get("reason") != "review_due":
         return None
     skill = _skills(state)[focus["skill_id"]]
-    return {
+    return _node_task_contract({
         "title": "到期复习：{}".format(focus["skill_id"]),
         "description": "不查看资料，先回忆核心概念，再完成一个应用示例。",
         "type": "review", "learning_task_type": "review", "skill_id": focus["skill_id"],
@@ -1013,16 +1414,20 @@ def due_review_task(state, now=None):
         "expected_output": "一份闭卷回忆答案和一个应用示例",
         "acceptance": "答案覆盖核心概念，示例可验证且未照抄资料",
         "verification_mode": "strict", "source": "fsrs", "locked": True,
-    }
+    })
 
 
-def next_learning_task(state, now=None):
+def next_learning_task(state, now=None, budget_minutes=None, stage_proposals=None):
     """Create one deterministic task for the current graph frontier."""
-    if (state.get("user_model") or {}).get("pack_id"):
-        return SkillMap(state, ok=True).next_task(now=now)
     review = due_review_task(state, now)
     if review:
         return review
+    if stage_proposals is not None:
+        pool = stage_candidate_pool(state, stage_proposals, now, budget_minutes if budget_minutes is not None else 30)
+        if pool:
+            return pool[0]
+    if (state.get("user_model") or {}).get("pack_id"):
+        return SkillMap(state, ok=True).next_task(now=now)
     focus = learning_focus(state, now)
     if not focus:
         return None
@@ -1034,7 +1439,7 @@ def next_learning_task(state, now=None):
     task_type = "diagnostic" if reviews == 0 else ("recall" if fsrs_state == State.Learning.name else "practice")
     labels = {"diagnostic": "诊断", "recall": "闭卷回忆", "practice": "应用练习"}
     name = skill.get("title") or focus["skill_id"]
-    return {
+    return _node_task_contract({
         "title": "{}：{}".format(labels[task_type], name),
         "description": ("不查看资料，回答核心问题并标出不会的部分。" if task_type != "practice"
                         else "完成一个新场景中的应用题，并解释关键步骤。"),
@@ -1045,7 +1450,7 @@ def next_learning_task(state, now=None):
         "expected_output": "一份独立完成、可检查的答案",
         "acceptance": "答案能够暴露真实掌握情况，并包含必要的解释或示例",
         "verification_mode": "strict", "source": "graph_scheduler", "locked": True,
-    }
+    })
 
 
 def knowledge_graph(state, now=None):

@@ -107,6 +107,27 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         interaction = dict(t.get("interaction")) if isinstance(t.get("interaction"), dict) else {}
         answer_key = [dict(x) for x in t.get("answer_key", []) if isinstance(x, dict)] if isinstance(t.get("answer_key"), list) else []
         response = dict(t.get("response")) if isinstance(t.get("response"), dict) else task_text(t.get("response"))
+        # Slice 1 compatibility contract: the explicit primary is authoritative;
+        # legacy single-skill fields migrate deterministically to a node task.
+        primary_skill_id = task_text(t.get("primary_skill_id") or t.get("skill_id") or t.get("knowledge_component"))
+        declared_task_kind = task_text(t.get("task_kind"))
+        # Slice 1 only recognizes node and legacy. Unknown historical labels are
+        # classified from the safe single-skill seam instead of being trusted.
+        task_kind = "node" if primary_skill_id else "legacy"
+        if declared_task_kind == "stage":
+            task_kind = "stage"
+            primary_skill_id = ""
+        elif declared_task_kind == "outcome":
+            task_kind = "outcome"
+            primary_skill_id = ""
+        elif declared_task_kind == "legacy":
+            task_kind = "legacy"
+        supporting_skill_ids = []
+        if task_kind == "node":
+            for skill_id in as_list(t.get("supporting_skill_ids")):
+                skill_id = task_text(skill_id)
+                if skill_id and skill_id != primary_skill_id and skill_id not in supporting_skill_ids:
+                    supporting_skill_ids.append(skill_id)
         return {
             "id": task_text(t.get("id")) or new_id("task"),
             "goal_id": task_text(t.get("goal_id")) or str(goal_id),
@@ -141,7 +162,28 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "continuation_note": task_text(t.get("continuation_note")),
             "next_action": task_text(t.get("next_action")),
             "adjustment_reason": task_text(t.get("adjustment_reason")),
-            "skill_id": task_text(t.get("skill_id") or t.get("knowledge_component")),
+            "skill_id": primary_skill_id,
+            "task_kind": task_kind,
+            "primary_skill_id": primary_skill_id,
+            "supporting_skill_ids": supporting_skill_ids,
+            "evidence_target": ((task_text(t.get("evidence_target")) or "mastery") if task_kind == "node" else ("integration" if task_kind == "stage" else "")),
+            "core_behavior": task_text(t.get("core_behavior")),
+            "estimated_verification_minutes": max(5, min(180, _nat(t.get("estimated_verification_minutes") or minutes))),
+            "contract_revision": max(1, _nat(t.get("contract_revision") or 1)),
+            "mastery_evidence": dict(t.get("mastery_evidence")) if isinstance(t.get("mastery_evidence"), dict) else {},
+            "stage_id": task_text(t.get("stage_id")),
+            "template_revision": t.get("template_revision"),
+            "pack_id": task_text(t.get("pack_id")),
+            "pack_version": task_text(t.get("pack_version")),
+            "required_skill_ids": [task_text(x) for x in as_list(t.get("required_skill_ids")) if task_text(x)],
+            "integration_behavior": task_text(t.get("integration_behavior")),
+            "outcome_shape": task_text(t.get("outcome_shape")),
+            "skill_checks": dict(t.get("skill_checks")) if isinstance(t.get("skill_checks"), dict) else {},
+            "evidence_contract": dict(t.get("evidence_contract")) if isinstance(t.get("evidence_contract"), dict) else {},
+            "criteria": [dict(x) for x in t.get("criteria", []) if isinstance(x, dict)] if isinstance(t.get("criteria"), list) else [],
+            "criterion_evidence": dict(t.get("criterion_evidence")) if isinstance(t.get("criterion_evidence"), dict) else {},
+            "required_stage_ids": [task_text(x) for x in as_list(t.get("required_stage_ids")) if task_text(x)],
+            "eligibility": dict(t.get("eligibility")) if isinstance(t.get("eligibility"), dict) else {},
             "criterion_ids": [task_text(x) for x in as_list(t.get("criterion_ids")) if task_text(x)],
             "prerequisites": as_list(t.get("prerequisites")),
             "hint_ladder": [task_text(x) for x in as_list(t.get("hint_ladder")) if task_text(x)][:4],
@@ -165,7 +207,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
         "acceptance_result": {}, "difficulty": 2, "source": "legacy", "locked": False,
         "created_at": datetime.now().isoformat(), "started_at": "", "completed_at": "",
         "attempts": 0, "actual_seconds": 0, "ended_at": "", "continuation_note": "", "next_action": "", "adjustment_reason": "",
-        "skill_id": "", "criterion_ids": [], "prerequisites": [], "learning_task_type": "", "review_due_at": "",
+        "skill_id": "", "task_kind": "legacy", "primary_skill_id": "", "supporting_skill_ids": [], "evidence_target": "", "criterion_ids": [], "prerequisites": [], "learning_task_type": "", "review_due_at": "",
         "hint_ladder": [], "teach_back_prompt": "", "independent_check": "", "transfer_prompt": "",
         "recall_rating": "", "demonstration": "",
         "materials": [], "answer_key": [], "interaction": {}, "response": "",

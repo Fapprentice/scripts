@@ -124,6 +124,30 @@ def test_hard_locked_skill_cannot_pass_acceptance():
     assert state["user_model"]["skills"]["cet4.vocab.collocation"].get("contract_met") is not True
 
 
+def test_non_node_task_never_settles_node_mastery():
+    calls = []
+    service = AcceptanceService(normalize=lambda tasks, *_: [dict(t) for t in tasks], text=str,
+        sync_pct=lambda state: None, save=lambda state: None, event=lambda *args: None,
+        learning_outcome=lambda *args: calls.append(args))
+    state = {"tasks": [{"id": "stage-1", "task_kind": "stage", "skill_id": "loops",
+                        "primary_skill_id": "loops", "status": "pending"}], "done_flags": [False]}
+    ok, result = service.persist_result(state, 0, {"status": "passed", "reason": "stage ok"})
+    assert ok and result["status"] == "passed"
+    assert calls == []
+
+
+def test_node_settlement_uses_primary_skill_alias():
+    calls = []
+    service = AcceptanceService(normalize=lambda tasks, *_: [dict(t) for t in tasks], text=str,
+        sync_pct=lambda state: None, save=lambda state: None, event=lambda *args: None,
+        learning_outcome=lambda *args: calls.append(args))
+    state = {"tasks": [{"id": "node-1", "task_kind": "node", "skill_id": "stale",
+                        "primary_skill_id": "loops", "status": "pending"}], "done_flags": [False]}
+    service.persist_result(state, 0, {"status": "passed", "reason": "ok"})
+    assert calls and calls[0][1]["primary_skill_id"] == "loops"
+    assert calls[0][1]["skill_id"] == "loops"
+
+
 def test_deliverable_skill_does_not_require_recall_rating():
     service, saved = _service()
     state = {"tasks": [{"status": "pending", "skill_id": "python.app.script", "evidence": ["app.py"]}],

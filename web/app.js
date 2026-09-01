@@ -856,9 +856,10 @@ function renderCurrentTaskBar(){
     return `<section class="task-material source"><b>${escapeHtml(item.title||'任务材料')}</b><p>${escapeHtml(item.content||item.prompt||'')}</p></section>`;
   }).join('');
   const responseBox=(task.interaction||{}).type==='text'?`<textarea class="task-response" data-task-response="${idx}" placeholder="在这里完成作答">${escapeHtml(typeof task.response==='string'?task.response:'')}</textarea>`:'';
+  const criterionBox=task.task_kind==='outcome' && Array.isArray(task.criteria)?`<section class="criterion-evidence"><h4>按成功标准提交独立证据</h4>${task.criteria.map(item=>{ const id=item.id||''; const refs=Array.isArray(task.criterion_evidence?.[id])?task.criterion_evidence[id].join('\n'):''; return `<label><b>${escapeHtml(item.text||id)}</b><textarea data-criterion-evidence="${idx}" data-criterion-id="${escapeHtml(id)}" placeholder="输入该标准对应的证据路径或说明">${escapeHtml(refs)}</textarea></label>`; }).join('')}</section>`:'';
   const materialCount=(task.materials||[]).filter(item=>item.type==='question').length;
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
-  const evidenceBox=materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`;
+  const evidenceBox=criterionBox || (materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`);
   const missionFooter=task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`;
   bar.className='current-task-bar mission-task';
   bar.innerHTML=`<article class="mission-card">
@@ -1080,6 +1081,7 @@ function taskCard(t,i){
   const skill=(state.user_model?.skills||{})[t.skill_id]||{};
   const skillTitle=(state.knowledge_graph?.nodes||[]).find(node=>node.id===t.skill_id)?.title || skill.title || '';
   const learningLabel=({diagnostic:'诊断',recall:'闭卷回忆',practice:'练习',explain:'费曼解释',transfer:'迁移应用',review:'到期复习'}[t.learning_task_type]||t.learning_task_type||'');
+  const taskKindLabel=({node:'节点练习',stage:'阶段挑战',outcome:'最终成果'}[t.task_kind]||'');
   const learningMeta=t.skill_id ? `<div class="learning-meta"><b>${escapeHtml(skillTitle||t.skill_id)}</b>${learningLabel?`<span>${escapeHtml(learningLabel)}</span>`:''}</div>` : '';
   if(t.status==='skipped') return `<div class="task task-compact deferred" data-task-index="${i}"><div class="task-body"><div class="task-title">${escapeHtml(t.text || t.title || '')}</div><div class="task-meta">今日已跳过，可稍后编辑</div></div><button data-edit="${i}">编辑</button></div>`;
   if(t.done) { const ar=t.acceptance_result||{}, ev=(t.evidence||[]).length; return `<div class="task task-compact done" data-task-index="${i}">
@@ -1091,6 +1093,7 @@ function taskCard(t,i){
   const optionalApps = [...new Set((t.allowed_apps||[]).filter(x => !requiredApps.some(r => String(r).toLowerCase() === String(x).toLowerCase())))].slice(0,4);
   const meta = [typeName(t.type), t.estimated_minutes ? `${t.estimated_minutes} 分钟` : '', t.difficulty ? `难度 ${t.difficulty}` : ''].filter(Boolean).join(' · ');
   const stateLabel=({doing:'进行中',paused:'已暂停',partial:'部分完成',deferred:'已顺延',skipped:'已跳过'}[t.status]||'待开始');
+
   const agentRun=(state.agent_runs||[]).slice().reverse().find(r=>r.task_id===(t.id||t.title));
   const agentUi=agentRun ? `<div class="agent-run"><b>Agent：${escapeHtml(agentRun.status)}</b><span>步骤 ${agentRun.step}/${agentRun.max_steps}</span>${agentRun.status==='awaiting_confirmation'?`<button data-agent="confirm" data-run-id="${escapeHtml(agentRun.run_id)}">确认继续</button>`:''}${['paused','failed','blocked'].includes(agentRun.status)?`<button data-agent="resume" data-run-id="${escapeHtml(agentRun.run_id)}">继续</button>`:''}${!['completed','failed','blocked','paused','awaiting_confirmation'].includes(agentRun.status)?`<button data-agent="stop" data-run-id="${escapeHtml(agentRun.run_id)}">暂停</button>`:''}</div>` : '';
   const ar = t.acceptance_result || {};
@@ -1107,7 +1110,7 @@ function taskCard(t,i){
     <div class="task-body">
       <div class="task-title">${escapeHtml(t.text || t.title || '')}</div>
       <div class="goal-ancestry">${ancestry.map(escapeHtml).join('<i>→</i>')}</div>
-      <div class="task-meta"><b data-task-status>${stateLabel}</b> · ${escapeHtml(meta)}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
+      <div class="task-meta"><b data-task-status>${stateLabel}</b> · ${escapeHtml(meta)}${taskKindLabel ? ` · ${escapeHtml(taskKindLabel)}` : ''}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
       ${learningMeta}
       ${t.skill_id && ((state.user_model?.skills||{})[t.skill_id]?.demonstration||t.demonstration||'recall')==='recall' ? `<div class="recall-rating" aria-label="回忆质量">
         <small>回忆质量：</small>
@@ -1136,6 +1139,7 @@ function taskCard(t,i){
       ${(ar.missing||[]).length ? `<div class="task-field"><b>缺少</b><span>${escapeHtml(ar.missing.join('；'))}</span></div>` : ''}
       ${acceptanceChecks.length ? `<div class="task-field acceptance-checks"><b>检查项</b><ul>${acceptanceChecks.map(check=>`<li><strong>${escapeHtml(check.status||'待核验')}</strong> ${escapeHtml(check.criterion||check.id||'检查项')}<small>${escapeHtml(check.reason||check.evidence||'')}</small></li>`).join('')}</ul></div>` : ''}
       ${nextActions.length ? `<div class="task-field"><b>下一步</b><span>${escapeHtml(nextActions.join('；'))}</span></div>` : ''}
+      ${(ar.failure_trace||[]).length ? `<div class="task-field recovery-trace"><b>最小回溯</b><ul>${ar.failure_trace.map(item=>`<li>${escapeHtml(item.criterion||item.criterion_id||'成功标准')}：${escapeHtml(item.next_action||'补充证据')}</li>`).join('')}</ul></div>` : ''}
       ${(ar.status && ar.status!=='passed') || ar.pass===false ? `<button class="recovery-task" data-create-recovery="${i}">创建补救任务</button>` : ''}
       ${(ar.evidence_refs||[]).length ? `<div class="task-field"><b>依据</b><span>${escapeHtml(ar.evidence_refs.join('；'))}</span></div>` : ''}
        ${requiredApps.length ? `<div class="task-apps"><small>必需应用</small>${requiredApps.map(appChipTiny).join('')}</div>` : ''}

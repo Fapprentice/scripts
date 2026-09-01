@@ -248,7 +248,7 @@ def goal_details(c):
 
 def record_product_event(c, name):
     """Record privacy-safe funnel counts without storing raw user content."""
-    allowed = {"goal_created","goal_ready","goal_confirmed","first_task_generated","first_task_started","first_evidence_submitted","first_task_accepted"}
+    allowed = {"goal_created","goal_ready","goal_confirmed","first_task_generated","first_task_started","first_evidence_submitted","first_task_accepted","outcome_completed"}
     if name not in allowed: return
     funnel = c.setdefault("product_funnel", {})
     funnel[name] = int(funnel.get(name, 0) or 0) + 1
@@ -302,6 +302,7 @@ def ensure_goal_state(c):
         c["last_review"] = {}; c["next_cycle_context"] = {}
         c["blocklist"] = []
     c["tasks"] = normalize_tasks(c.get("tasks", []), key, c.get("done_flags", []))
+    adaptive.migrate_legacy_tasks(c)
     for task in c["tasks"]: task["goal_id"] = key; adaptive.ensure_task_materials(task)
     sync_pct(c)
     c["task_gen"] = gen_settings(c)
@@ -750,6 +751,9 @@ def gen_tasks():
     settings=effective_gen_settings(c)
     if adaptive.is_learning_goal(g, details):
         planned=adaptive.plan_learning_tasks(c,g,details,settings.get("task_count",3))
+        outcome = adaptive.outcome_task(details, c)
+        if outcome.get("criterion_ids") and not any(t.get("task_kind") == "outcome" for t in planned):
+            planned.append(outcome)
         if planned:
             mode="map_patch" if planned[0].get("source")=="map_patch" else "skill_map"
             gen_status("读取技能地图","按已解锁节点生成今日学习任务" if mode=="skill_map" else "技能地图未覆盖，先补图")
@@ -842,6 +846,9 @@ def fallback_tasks(c, why):
     details=goal_details(c)
     if adaptive.is_learning_goal(g, details):
         planned=adaptive.plan_learning_tasks(c,g,details,s.get("task_count",3))
+        outcome = adaptive.outcome_task(details, c)
+        if outcome.get("criterion_ids") and not any(t.get("task_kind") == "outcome" for t in planned):
+            planned.append(outcome)
         if planned:
             mode="map_patch" if planned[0].get("source")=="map_patch" else "fallback"
             return save_diagnostic_plan(c,planned,mode)
@@ -891,7 +898,30 @@ def evaluate_task(task_idx):
     c=ensure_goal_state(lc()); items=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
     if task_idx<0 or task_idx>=len(items): raise ValueError("任务索引越界")
     task=items[task_idx]; evidence=as_list(task.get("evidence")); response=task.get("response"); cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled",True))
-    if adaptive.requires_recall_rating(task, c) and not task.get("recall_rating"):
+    task_kind = str(task.get("task_kind") or "").strip()
+    if task_kind == "outcome":
+        eligibility = task.get("eligibility") if isinstance(task.get("eligibility"), dict) else {}
+        if task.get("locked") or eligibility.get("eligible") is False:
+            result = norm_acceptance_result({"pass": False, "status": "blocked",
+                "reason": "最终成果尚未满足资格门槛",
+                "missing": list(eligibility.get("missing_skill_ids") or []) + list(eligibility.get("missing_stage_ids") or []),
+                "next_steps": ["先完成所需节点和阶段门"]})
+        else:
+            evaluated = adaptive.evaluate_outcome(task, {"criterion_evidence": task.get("criterion_evidence") or (response.get("criterion_evidence") if isinstance(response, dict) else {})})
+            result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
+                "reason": "所有成功标准均有独立证据" if evaluated.get("status") == "passed" else "仍缺少成功标准的独立证据",
+                "missing": evaluated.get("failed_criterion_ids") or [], "checks": evaluated.get("criterion_results") or [],
+                "next_steps": evaluated.get("next_actions") or [],
+                "failure_trace": evaluated.get("failure_trace") or []})
+    elif task_kind == "stage":
+        stage_input = response if isinstance(response, dict) else {}
+        evaluated = adaptive.evaluate_stage_outcome(task, stage_input)
+        result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
+            "reason": evaluated.get("reason") or "阶段观察点已记录",
+            "missing": [item.get("skill_id") for item in evaluated.get("attribution") or []],
+            "checks": evaluated.get("skill_observations") or [],
+            "next_steps": ["完成失败节点的最小验证任务"] if evaluated.get("attribution") else []})
+    elif adaptive.requires_recall_rating(task, c) and not task.get("recall_rating"):
         raise ValueError("请先选择回忆质量：忘记、困难、正常或轻松")
     if task.get("skill_id") and not adaptive.task_is_unlocked(c, task):
         result=norm_acceptance_result({"pass":False,"reason":"硬先修未掌握，不能验收通过该技能节点",
@@ -904,12 +934,27 @@ def evaluate_task(task_idx):
         if result.get("needs_llm") and cloud_enabled and valid_deepseek_key(dk()):
             result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
     result=norm_acceptance_result(result)
+    if task_kind == "outcome" and result.get("status") == "passed":
+        if not c.get("goal_completed"):
+            c["goal_completed"] = True
+            c["goal_completed_at"] = datetime.now().isoformat()
+            evlog(c, "outcome_completed", "最终成果验收通过", {"task_id": task.get("id", "")})
+            record_product_event(c, "outcome_completed")
     if result["status"] != "passed":
         sample_ai_incident("evidence_to_acceptance", "deepseek" if cloud_enabled else "deterministic",
                            task.get("criterion_ids", []))
     reset_task_timer(task)
     c["tasks"]=items; c["done_flags"]=list(c.get("done_flags",[]))
-    ok, persisted = ACCEPTANCE.persist_result(c, task_idx, result)
+    if task_kind == "stage":
+        persisted_stage = adaptive.record_stage_outcome(c, task, {"status": result.get("status"), "reason": result.get("reason"),
+            "evidence_refs": evidence, "skill_observations": result.get("checks") or []})
+        task["acceptance_result"] = result
+        task["status"] = "done" if result.get("status") == "passed" else task.get("status") or "pending"
+        c["tasks"] = items
+        save_goal_state(c)
+        ok, persisted = True, result
+    else:
+        ok, persisted = ACCEPTANCE.persist_result(c, task_idx, result)
     if not ok: raise ValueError(persisted)
     if persisted.get("status")=="passed": record_product_event(c, "first_task_accepted")
     sc(c)
@@ -1996,6 +2041,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 response=data.get("response","")
                 if not isinstance(response,(str,dict)): return self.send_json({"ok":False,"message":"作答格式无效"},400)
                 if len(json.dumps(response,ensure_ascii=False))>20000: return self.send_json({"ok":False,"message":"作答内容过长"},400)
+                if ts[i].get("task_kind") == "outcome" and isinstance(response, dict):
+                    criterion_evidence = response.get("criterion_evidence")
+                    if not isinstance(criterion_evidence, dict): return self.send_json({"ok":False,"message":"最终成果必须按成功标准提交证据"},400)
+                    unknown = set(criterion_evidence) - set(ts[i].get("criterion_ids") or [])
+                    if unknown: return self.send_json({"ok":False,"message":"包含未知成功标准"},400)
+                    ts[i]["criterion_evidence"] = criterion_evidence
                 ts[i]["response"]=response; c["tasks"]=ts
                 save_goal_state(c); evlog(c,"task_response","保存页面作答",{"idx":i}); sc(c); return self.send_json({"ok":True})
             if self.path=="/api/task-rating":

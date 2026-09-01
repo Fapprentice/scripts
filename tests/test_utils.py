@@ -184,6 +184,55 @@ class TestNormalizeTask:
         assert nt["independent_check"] == "独立复现"
         assert nt["transfer_prompt"] == "换题练习"
 
+    def test_node_task_has_primary_and_supporting_skill_contract(self):
+        nt = utils.normalize_task({"text": "练习循环", "task_kind": "node",
+                                   "skill_id": "python.control.loop",
+                                   "supporting_skill_ids": ["python.syntax.types"],
+                                   "evidence_target": "mastery"})
+        assert nt["task_kind"] == "node"
+        assert nt["primary_skill_id"] == "python.control.loop"
+        assert nt["skill_id"] == "python.control.loop"
+        assert nt["supporting_skill_ids"] == ["python.syntax.types"]
+        assert nt["evidence_target"] == "mastery"
+
+    def test_legacy_skill_task_defaults_to_node_without_supporting_skills(self):
+        nt = utils.normalize_task({"text": "练习循环", "skill_id": "python.control.loop"})
+        assert nt["task_kind"] == "node"
+        assert nt["primary_skill_id"] == "python.control.loop"
+        assert nt["supporting_skill_ids"] == []
+
+
+    def test_primary_skill_is_authoritative_compatibility_mirror(self):
+        nt = utils.normalize_task({"text": "练习循环", "primary_skill_id": "python.control.loop", "skill_id": "stale.legacy.value"})
+        assert nt["primary_skill_id"] == nt["skill_id"] == "python.control.loop"
+
+    def test_supporting_skills_are_deduplicated_and_exclude_primary(self):
+        nt = utils.normalize_task({"text": "练习循环", "primary_skill_id": "python.control.loop",
+                                   "supporting_skill_ids": [" python.syntax.types ", "python.control.loop", "python.syntax.types", ""]})
+        assert nt["supporting_skill_ids"] == ["python.syntax.types"]
+
+    def test_legacy_knowledge_component_migration_is_replay_safe(self):
+        first = utils.normalize_task({"text": "旧循环练习", "knowledge_component": "python.control.loop"})
+        replay = utils.normalize_task(first)
+        assert first["task_kind"] == replay["task_kind"] == "node"
+        assert first["primary_skill_id"] == replay["primary_skill_id"] == "python.control.loop"
+
+    def test_task_without_single_skill_remains_legacy(self):
+        nt = utils.normalize_task({"text": "旧综合任务"})
+        assert (nt["task_kind"], nt["primary_skill_id"], nt["skill_id"]) == ("legacy", "", "")
+
+    def test_explicit_node_without_primary_is_safely_classified_legacy(self):
+        nt = utils.normalize_task({"text": "缺少技能的节点", "task_kind": "node",
+                                   "supporting_skill_ids": ["python.syntax.types"]})
+        assert nt["task_kind"] == "legacy"
+        assert nt["supporting_skill_ids"] == []
+
+    def test_unknown_task_kind_with_single_skill_migrates_to_node(self):
+        nt = utils.normalize_task({"text": "旧练习", "task_kind": "exercise",
+                                   "skill_id": "python.control.loop"})
+        assert nt["task_kind"] == "node"
+        assert nt["evidence_target"] == "mastery"
+
 
 class TestNormalizeTasks:
     def test_batch_normalization(self):
