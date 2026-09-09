@@ -13,6 +13,8 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Dist = Join-Path $Root "dist"
 $Version = (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
 $VersionInfo = Join-Path $Root "build\version_info.generated.txt"
+$VersionInfoDir = Split-Path -Parent $VersionInfo
+New-Item -ItemType Directory -Path $VersionInfoDir -Force | Out-Null
 $versionInfoText = (Get-Content (Join-Path $Root "packaging\version_info.txt") -Raw) -replace '0\.2\.0', $Version
 Set-Content -Path $VersionInfo -Value $versionInfoText -NoNewline
 $OutputZip = Join-Path $Root "task-verge-portable-v$Version-win-x64.zip"
@@ -50,9 +52,22 @@ if (-not $InstallerOnly) {
         --icon (Join-Path $Root "web\taskverge.ico") `
         --version-file $VersionInfo `
         --add-data "$(Join-Path $Root 'web');web" `
+        --add-data "$(Join-Path $Root 'packs');packs" `
         (Join-Path $Root "task-panel.pyw")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
     Sign-Artifact (Join-Path $Dist "TaskVerge\TaskVerge.exe")
+
+    $smokeData = Join-Path ([IO.Path]::GetTempPath()) ("taskverge-pack-smoke-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $smokeData -Force | Out-Null
+    $previousLocalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $smokeData
+        & (Join-Path $Dist "TaskVerge\TaskVerge.exe") --pack-smoke
+        if ($LASTEXITCODE -ne 0) { throw "packaged skill-pack smoke failed" }
+    } finally {
+        $env:LOCALAPPDATA = $previousLocalAppData
+        Remove-Item -LiteralPath $smokeData -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     # Create ZIP
     if (Test-Path $OutputZip) { Remove-Item $OutputZip -Force }

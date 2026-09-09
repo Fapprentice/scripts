@@ -751,10 +751,7 @@ async function runCompanion(action, treat){
   if(action==='focus'){
     if(doing) return;
     if(!next) return run('generate');
-    const idx=tasks.indexOf(next), previous=next.status;
-    next.status='doing'; next.started_at=new Date().toISOString(); render();
-    try{ await api('task-state',{idx,status:'doing'}); await load(); }
-    catch(err){ next.status=previous; render(); toast('开始任务失败：'+err.message,false); }
+    await startTask(tasks.indexOf(next));
     return;
   }
   if(action==='pause' && doing){
@@ -827,6 +824,15 @@ function localizeShell(){
   });
 }
 
+function criterionEvidenceRows(task,id){
+  const raw=Array.isArray(task?.criterion_evidence?.[id])?task.criterion_evidence[id]:task?.criterion_evidence?.[id]?[task.criterion_evidence[id]]:[];
+  return raw.map(value=>{
+    if(typeof value==='string') return /^[A-Za-z]:[\\/]|^[/\\]/.test(value)?{kind:'legacy_attachment',ref:value}:{kind:'legacy_text',text:value};
+    if(value&&value.kind==='attachment') return {kind:'attachment',ref:value.ref||value.path||''};
+    if(value&&value.kind==='direct_text') return {kind:'direct_text',text:value.text||''};
+    return {kind:'legacy_text',text:''};
+  });
+}
 function renderCurrentTaskBar(){
   let bar=$('#currentTaskBar');
   const task=(state.tasks||[]).find(t=>!t.done && t.status==='doing') || (state.tasks||[]).find(t=>!t.done && t.status!=='skipped');
@@ -856,7 +862,7 @@ function renderCurrentTaskBar(){
     return `<section class="task-material source"><b>${escapeHtml(item.title||'任务材料')}</b><p>${escapeHtml(item.content||item.prompt||'')}</p></section>`;
   }).join('');
   const responseBox=(task.interaction||{}).type==='text'?`<textarea class="task-response" data-task-response="${idx}" placeholder="在这里完成作答">${escapeHtml(typeof task.response==='string'?task.response:'')}</textarea>`:'';
-  const criterionBox=task.task_kind==='outcome' && Array.isArray(task.criteria)?`<section class="criterion-evidence"><h4>按成功标准提交独立证据</h4>${task.criteria.map(item=>{ const id=item.id||''; const refs=Array.isArray(task.criterion_evidence?.[id])?task.criterion_evidence[id].join('\n'):''; return `<label><b>${escapeHtml(item.text||id)}</b><textarea data-criterion-evidence="${idx}" data-criterion-id="${escapeHtml(id)}" placeholder="输入该标准对应的证据路径或说明">${escapeHtml(refs)}</textarea></label>`; }).join('')}<button class="primary" data-save-criterion-evidence="${idx}">保存成功标准证据</button></section>`:'';
+  const criterionBox=task.task_kind==='outcome' && Array.isArray(task.criteria)?`<section class="criterion-evidence"><h4>按成功标准提交独立证据</h4><p class="hint">文字请填写直接证据；文件请上传受管附件。两者会分别保存。</p>${task.criteria.map(item=>{ const id=item.id||''; const rows=criterionEvidenceRows(task,id); const text=rows.filter(row=>row.kind==='direct_text'||row.kind==='legacy_text').map(row=>row.text).join('\n'); const attachments=rows.filter(row=>row.kind==='attachment'||row.kind==='legacy_attachment').map(row=>row.ref).filter(Boolean); return `<label><b>${escapeHtml(item.text||id)}</b><textarea data-criterion-text="${idx}" data-criterion-id="${escapeHtml(id)}" placeholder="填写该标准对应的直接文字证据">${escapeHtml(text)}</textarea><small>直接文字证据</small><input data-criterion-evidence-file="${idx}" data-criterion-id="${escapeHtml(id)}" type="file" multiple><small data-criterion-attachments="${idx}" data-criterion-id="${escapeHtml(id)}">${attachments.length?`已附：${escapeHtml(attachments.map(value=>String(value).split(/[\\/]/).pop()).join('、'))}`:'尚未上传附件'}</small></label>`; }).join('')}<button class="primary" data-save-criterion-evidence="${idx}">保存成功标准证据</button></section>`:'';
   const materialCount=(task.materials||[]).filter(item=>item.type==='question').length;
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
   const evidenceBox=criterionBox || (materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`);
@@ -1166,10 +1172,11 @@ function appChipTiny(exe){
   const app = allApps.find(a=>(a.exe||'').toLowerCase()===String(exe).toLowerCase());
   return `<span class="task-app-chip"><img src="${escapeHtml(app?.icon||'')}" onerror="this.style.display='none'">${escapeHtml(app?.name||exe)}</span>`;
 }
-async function uploadEvidenceFile(idx, input){
+let _criterionEvidenceUpload = null;
+async function uploadEvidenceFile(idx, input, refresh=true){
   const files=input?.files;
   if(!files || !files.length){ toast('请先选择交付物文件', false); return; }
-  let ok = true;
+  let ok = true, uploaded = [];
   for(const file of files){
     logEvent('upload_selected','已选择交付物文件',{idx,name:file.name,size:file.size});
     const fd = new FormData();
@@ -1179,6 +1186,7 @@ async function uploadEvidenceFile(idx, input){
     try{
       const r = await uploadApi('upload-evidence', fd);
       logEvent('upload_done','交付物上传成功',{idx,file:r.evidence||file.name});
+      if(r.evidence) uploaded.push(r.evidence);
     }catch(e){
       logEvent('upload_failed','交付物上传失败',{idx,name:file.name,error:e.message});
       toast('上传失败：'+file.name, false);
@@ -1188,10 +1196,30 @@ async function uploadEvidenceFile(idx, input){
   if(input) input.value='';
   _lastFilePickTs = 0;  // allow full refresh to show new evidence files
   if(ok) toast('交付物已保存');
-  // Preserve the live card and its file input after the upload completes.
-  // The next full sync can update unrelated dashboard data without replacing
-  // an editor the user is currently using.
-  try{ state=normalizeState(await api('state')); renderTasksLight(); }catch(_){ }
+  if(refresh){
+    try{ state=normalizeState(await api('state')); renderTasksLight(); }catch(_){ }
+  }
+  return uploaded;
+}
+async function uploadCriterionEvidenceFile(idx,input){
+  const criterionId=input?.dataset?.criterionId;
+  const uploaded=await uploadEvidenceFile(idx,input,false);
+  if(!criterionId||!uploaded.length) return;
+  state=normalizeState(await api('state'));
+  const task=state.tasks[idx]||{}, criterionEvidence={};
+  document.querySelectorAll(`[data-criterion-text="${idx}"]`).forEach(textBox=>{
+    const id=textBox.dataset.criterionId;
+    const rows=criterionEvidenceRows(task,id).filter(row=>row.kind==='attachment'||row.kind==='legacy_attachment').map(row=>({kind:'attachment',ref:row.ref}));
+    if(id===criterionId) rows.push(...uploaded.map(ref=>({kind:'attachment',ref})));
+    const text=textBox.value.trim();
+    if(text) rows.push({kind:'direct_text',text});
+    if(rows.length) criterionEvidence[id]=rows;
+  });
+  await api('task-response',{idx,response:{criterion_evidence:criterionEvidence}});
+  state=normalizeState(await api('state'));
+  const label=document.querySelector(`[data-criterion-attachments="${idx}"][data-criterion-id="${criterionId}"]`);
+  const refs=criterionEvidenceRows(state.tasks[idx]||{},criterionId).filter(row=>row.kind==='attachment'||row.kind==='legacy_attachment').map(row=>row.ref).filter(Boolean);
+  if(label) label.textContent=refs.length?`已附：${refs.map(value=>String(value).split(/[\\/]/).pop()).join('、')}`:'尚未上传附件';
 }
 function formatFocusElapsed(task){
   const started=task.started_at?new Date(task.started_at).getTime():0;
@@ -1238,6 +1266,58 @@ function setSyncState(kind, detail){
 }
 function syncErrorDetail(){
   return _lastSyncTs ? Math.round((Date.now()-_lastSyncTs)/1000)+' 秒前' : '';
+}
+function taskEditorDrafts(){
+  const drafts={};
+  document.querySelectorAll('#currentTaskBar textarea, #currentTaskBar input:not([type="file"])').forEach(input=>{
+    const key=input.dataset.criterionId!==undefined?`criterion:${input.dataset.criterionId}`:input.dataset.taskResponse!==undefined?`response:${input.dataset.taskResponse}`:'';
+    if(key) drafts[key]=input.value;
+  });
+  return drafts;
+}
+function restoreTaskEditorDrafts(drafts){
+  document.querySelectorAll('#currentTaskBar textarea, #currentTaskBar input:not([type="file"])').forEach(input=>{
+    const key=input.dataset.criterionId!==undefined?`criterion:${input.dataset.criterionId}`:input.dataset.taskResponse!==undefined?`response:${input.dataset.taskResponse}`:'';
+    if(key in drafts) input.value=drafts[key];
+  });
+}
+function renderTaskKeepingDrafts(){
+  const drafts=taskEditorDrafts();
+  render();
+  restoreTaskEditorDrafts(drafts);
+}
+async function startTask(idx){
+  const task=state.tasks[idx];
+  if(!task) return;
+  task.status='doing'; task.started_at=new Date().toISOString(); renderTaskKeepingDrafts();
+  try{
+    await api('task-state',{idx,status:'doing'});
+  }catch(writeError){
+    try{
+      const remote=normalizeState(await api('state'));
+      state=remote;
+      if(remote.tasks?.[idx]?.status==='doing'){
+        renderTasksLight();
+        toast('任务已开始，但启动响应异常，请稍后确认状态',false);
+      }else{
+        renderTaskKeepingDrafts();
+        toast('开始任务失败：'+writeError.message,false);
+      }
+    }catch(syncError){
+      setSyncState('error', syncErrorDetail());
+      toast('启动结果未确认，请刷新后重试',false);
+    }
+    return;
+  }
+  try{
+    state=normalizeState(await api('state'));
+    renderTasksLight();
+    const bar=$('#currentTaskBar');
+    if(bar) bar.dataset.startStateApplied=String(idx);
+  }catch(syncError){
+    setSyncState('error', syncErrorDetail());
+    toast('任务已开始，但状态刷新失败，请稍后重试',false);
+  }
 }
 async function load(){
   setSyncState('syncing');
@@ -1453,12 +1533,18 @@ document.addEventListener('click', async e=>{
   const saveCriteria=e.target.closest?.('[data-save-criterion-evidence]');
   if(saveCriteria){
     const idx=+saveCriteria.dataset.saveCriterionEvidence;
+    if(_criterionEvidenceUpload) await _criterionEvidenceUpload;
+    try{ state=normalizeState(await api('state')); }catch(err){ toast('读取成功标准证据失败：'+err.message,false); return; }
     const criterion_evidence={};
-    document.querySelectorAll(`[data-criterion-evidence=\"${idx}\"]`).forEach(input=>{
-      const values=input.value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
-      if(values.length) criterion_evidence[input.dataset.criterionId]=values;
+    const task=state.tasks[idx]||{};
+    document.querySelectorAll(`[data-criterion-text=\"${idx}\"]`).forEach(input=>{
+      const id=input.dataset.criterionId;
+      const rows=criterionEvidenceRows(task,id).filter(row=>row.kind==='attachment'||row.kind==='legacy_attachment').map(row=>({kind:'attachment',ref:row.ref}));
+      const text=input.value.trim();
+      if(text) rows.push({kind:'direct_text',text});
+      if(rows.length) criterion_evidence[id]=rows;
     });
-    try{ await api('task-response',{idx,response:{criterion_evidence}}); state.tasks[idx].criterion_evidence=criterion_evidence; toast('成功标准证据已保存'); }
+    try{ await api('task-response',{idx,response:{criterion_evidence}}); state=normalizeState(await api('state')); renderTasksLight(); toast('成功标准证据已保存'); }
     catch(err){ toast('保存成功标准证据失败：'+err.message,false); }
     return;
   }
@@ -1568,10 +1654,7 @@ document.addEventListener('click', async e=>{
     return;
   }
   if(e.target.dataset.startTask!==undefined){
-    const idx=+e.target.dataset.startTask, previous=state.tasks[idx]?.status;
-    state.tasks[idx].status='doing'; state.tasks[idx].started_at=new Date().toISOString(); render();
-    try{ await api('task-state',{idx,status:'doing'}); await load(); }
-    catch(err){ state.tasks[idx].status=previous; render(); toast('开始任务失败：'+err.message,false); }
+    await startTask(+e.target.dataset.startTask);
     return;
   }
   if(e.target.closest?.('[data-recovery]')){
@@ -1663,7 +1746,11 @@ document.addEventListener('click', async e=>{
   if(e.target.id==='generate' || e.target.closest?.('[data-start-today]')) return run('generate');
   if(e.target.id==='evaluate') return run('evaluate');
   if(e.target.dataset.aiEvaluate!==undefined){
-    const idx=+e.target.dataset.aiEvaluate, t=state.tasks[idx] || {};
+    const idx=+e.target.dataset.aiEvaluate;
+    let t=state.tasks[idx] || {};
+    // File uploads finish asynchronously; read the persisted task before
+    // choosing evidence so evaluation cannot race the upload refresh.
+    try{ state=normalizeState(await api('state')); t=state.tasks[idx]||t; }catch(_){ }
     if((t.materials||[]).length){
       const response=t.response||'';
       if(!response || (typeof response==='object'&&!Object.keys(response).length)){ showModal('不能验收','请先完成页面中的题目或作答。','warn'); return; }
@@ -1840,6 +1927,12 @@ document.addEventListener('change', async e=>{
   if(e.target.dataset.taskResponse!==undefined){
     const idx=+e.target.dataset.taskResponse, response=e.target.value.trim();
     state.tasks[idx].response=response; await api('task-response',{idx,response}); return;
+  }
+  if(e.target.dataset.criterionEvidenceFile!==undefined){
+    const pending=uploadCriterionEvidenceFile(+e.target.dataset.criterionEvidenceFile,e.target);
+    _criterionEvidenceUpload=pending;
+    try{ await pending; }finally{ if(_criterionEvidenceUpload===pending) _criterionEvidenceUpload=null; }
+    return;
   }
   if(e.target.dataset.evidenceFile!==undefined){
     await uploadEvidenceFile(+e.target.dataset.evidenceFile, e.target);

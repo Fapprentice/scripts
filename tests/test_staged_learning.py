@@ -63,6 +63,7 @@ def test_stage_normalized_fields_round_trip_without_skill_identity():
     )
     assert {field: replay[field] for field in stage_fields} == {field: first[field] for field in stage_fields}
     assert replay["skill_id"] == replay["primary_skill_id"] == ""
+    assert replay["observations_required"] is True
 
 
 def test_python_control_flow_template_is_well_formed():
@@ -104,6 +105,19 @@ def test_pack_stage_requires_observations_even_for_legacy_pass_input():
     assert result["status"] == "partial"
 
 
+def test_stage_pass_requires_evidence_on_each_required_observation():
+    pack = _stage_pack(); template = learning.get_stage_template(pack, "python.stage.control-flow")
+    task = learning.instantiate_stage_task(pack, template["id"], _proposal(template))
+    result = learning.evaluate_stage_outcome(task, {
+        "status": "passed", "evidence_refs": ["run.txt"],
+        "skill_observations": [
+            {"skill_id": "python.control.branch", "status": "passed"},
+            {"skill_id": "python.control.loop", "status": "passed", "evidence": "loop output"},
+        ],
+    })
+    assert result["status"] == "partial"
+
+
 def test_stage_outcome_requires_all_required_skill_observations_for_pass():
     pack = _stage_pack()
     template = learning.get_stage_template(pack, "python.stage.control-flow")
@@ -133,8 +147,18 @@ def test_outcome_requires_each_criterion_evidence_and_preserves_ids():
     partial = learning.evaluate_outcome(task, {"criterion_evidence": {task["criterion_ids"][0]: ["out.txt"]}})
     assert partial["status"] == "failed"
     assert len(partial["failed_criterion_ids"]) == 1
-    complete = learning.evaluate_outcome(task, {"criterion_evidence": {item["id"]: [item["id"] + ".txt"] for item in task["criteria"]}})
+    complete = learning.evaluate_outcome(task, {"criterion_evidence": {
+        task["criterion_ids"][0]: [{"kind": "direct_text", "text": "输出正确", "verified": True}],
+        task["criterion_ids"][1]: [{"kind": "direct_text", "text": "记录运行", "verified": True}],
+    }}, criterion_judge=lambda criterion, *_: {"criterion_id": criterion["id"], "pass": True, "uncertainty": 0})
     assert complete["status"] == "passed"
+
+
+def test_outcome_does_not_pass_null_blank_or_unrelated_evidence():
+    task = learning.outcome_task({"outcome": "结果", "success_criteria": ["输出正确"]}, {})
+    criterion = task["criterion_ids"][0]
+    for value in ([None], ["   "], ["与标准无关的说明"]):
+        assert learning.evaluate_outcome(task, {"criterion_evidence": {criterion: value}})["status"] != "passed"
 
 
 def test_outcome_eligibility_derives_required_skill_from_pack_coverage():
@@ -147,7 +171,9 @@ def test_outcome_eligibility_derives_required_skill_from_pack_coverage():
 def test_outcome_failure_trace_is_criterion_scoped_and_does_not_reset_map():
     task = learning.outcome_task({"outcome": "结果", "success_criteria": ["标准一", "标准二"]}, {})
     failed_id = task["criterion_ids"][1]
-    result = learning.evaluate_outcome(task, {"criterion_evidence": {task["criterion_ids"][0]: ["one.txt"]}})
+    result = learning.evaluate_outcome(task, {"criterion_evidence": {
+        task["criterion_ids"][0]: [{"kind": "direct_text", "text": "标准一", "verified": True}],
+    }}, criterion_judge=lambda criterion, *_: {"criterion_id": criterion["id"], "pass": True, "uncertainty": 0})
     assert result["failed_criterion_ids"] == [failed_id]
     assert result["failure_trace"] == [{"criterion_id": failed_id, "criterion": "标准二",
         "next_action": "补充该成功标准对应的最小独立证据", "task_kind": "diagnostic", "evidence_target": "criterion"}]

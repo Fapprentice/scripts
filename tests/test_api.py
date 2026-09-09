@@ -230,7 +230,7 @@ class TestReviewedFixes:
         assert [g["title"] for g in state["goals"]] == ["保留目标"]
         assert all(isinstance(g, dict) and g.get("id") and g.get("title") for g in state["goals"])
         after = _get("/api/export")
-        assert after.get("tasks_by_goal", {}).get("goal_1"), after
+        assert after.get("tasks_by_goal", {}).get("goal_delete"), after
 
     def test_write_endpoint_requires_session(self):
         req = urllib.request.Request(

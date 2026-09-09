@@ -287,8 +287,10 @@ def run_llm_eval(task, details, fg_top, deepseek_fn):
         }
     except Exception as e:
         return {
-            "pass": True,
-            "reason": f"LLM 调用失败({e})，确定性检查通过故放行",
+            "pass": False,
+            "status": "needs_review",
+            "needs_llm": True,
+            "reason": f"LLM 调用失败({e})，需要人工复核",
             "missing": [],
             "next_steps": ["人工复核"],
             "evidence_refs": [],
@@ -299,11 +301,12 @@ def run_llm_eval(task, details, fg_top, deepseek_fn):
 # Convenience: build a full result from verdict
 # ---------------------------------------------------------------------------
 
-STATUSES = ("passed", "failed", "needs_review", "blocked")
+STATUSES = ("passed", "failed", "partial", "needs_review", "blocked")
 DECISION_TO_STATUS = {
     "accepted": "passed",
     "conditional": "passed",
     "review": "needs_review",
+    "partial": "partial",
     "rejected": "failed",
     "blocked": "blocked",
 }
@@ -311,6 +314,7 @@ STATUS_TO_DECISION = {
     "passed": "accepted",
     "failed": "rejected",
     "needs_review": "review",
+    "partial": "partial",
     "blocked": "blocked",
 }
 _RULE_NEXT = {
@@ -342,6 +346,7 @@ def _check_items(raw, default_status="failed"):
                 "id": str(rule_id),
                 "criterion": str(payload.get("criterion") or rule_id),
                 "status": status,
+                "skill_id": str(payload.get("skill_id") or ""),
                 "evidence": str(payload.get("evidence") or payload.get("detail") or ""),
                 "reason": str(payload.get("reason") or payload.get("detail") or ""),
             })
@@ -352,9 +357,10 @@ def _check_items(raw, default_status="failed"):
                 continue
             status = item.get("status") if item.get("status") in STATUSES else default_status
             items.append({
-                "id": str(item.get("id") or item.get("criterion") or ""),
+                "id": str(item.get("id") or item.get("skill_id") or item.get("criterion") or ""),
                 "criterion": str(item.get("criterion") or item.get("id") or ""),
                 "status": status,
+                "skill_id": str(item.get("skill_id") or ""),
                 "evidence": str(item.get("evidence") or item.get("detail") or ""),
                 "reason": str(item.get("reason") or item.get("detail") or ""),
             })
@@ -408,7 +414,7 @@ def explainable_result(result=None, passed=False, reason="", status=""):
     summary = str(result.get("summary") or result.get("reason") or reason or "").strip()
     if not summary:
         summary = {"passed": "所有确定性检查通过", "failed": "验收未通过",
-                   "needs_review": "确定性规则无法判定，需要复核", "blocked": "验收被环境或前置条件阻断"}[status]
+                   "needs_review": "确定性规则无法判定，需要复核", "partial": "部分证据可靠但整体尚未通过", "blocked": "验收被环境或前置条件阻断"}[status]
     if status == "needs_review":
         confidence = min(confidence, 0.6)
     elif status == "passed" and not needs_llm:

@@ -86,6 +86,10 @@ def test_complete_adaptive_product_loop_from_ui():
         begin = page.locator("#currentTaskBar [data-start-task]")
         begin.click()
         page.locator('#currentTaskBar [data-session-action="pause"]').wait_for(timeout=10000)
+        page.wait_for_function(f"""async () => {{
+          const s = await TaskVergeApi.api('state');
+          return s.tasks?.[{current_idx}]?.status === 'doing' && !!s.tasks?.[{current_idx}]?.started_at;
+        }}""", timeout=10000)
         assert page.locator("#dashboard").is_visible()
         assert page.locator("#taskList").is_visible()
         assert "focus-active" not in (page.locator("body").get_attribute("class") or "")
@@ -97,14 +101,20 @@ def test_complete_adaptive_product_loop_from_ui():
               const s = await TaskVergeApi.api('state');
               return s.tasks?.[{current_idx}]?.recall_rating === 'good';
             }}""", timeout=10000)
+        page.wait_for_timeout(1200)
         page.locator('#currentTaskBar [data-session-action="pause"]').click()
         page.locator("#taskList .task").filter(has_text="已暂停").first.wait_for(timeout=10000)
-        assert page.locator("#focusElapsed").inner_text() == "00:00:00"
+        page.wait_for_function(f"""async () => {{
+          const s = await TaskVergeApi.api('state');
+          return s.tasks?.[{current_idx}]?.status === 'paused' && Number(s.tasks?.[{current_idx}]?.actual_seconds || 0) > 0;
+        }}""", timeout=10000)
+        persisted_elapsed = float(page.locator("#focusElapsed").get_attribute("data-actual") or 0)
+        assert persisted_elapsed > 0
         assert "开始于" not in page.locator("#currentTaskBar").inner_text()
         assert "focus-active" not in (page.locator("body").get_attribute("class") or "")
         page.locator("#currentTaskBar [data-start-task]").click()
         page.locator('#currentTaskBar [data-session-action="pause"]').wait_for(timeout=10000)
-        assert float(page.locator("#focusElapsed").get_attribute("data-actual") or 0) < 1
+        assert float(page.locator("#focusElapsed").get_attribute("data-actual") or 0) >= persisted_elapsed
         assert page.locator("#focusElapsed").inner_text().startswith("00:00:")
 
         # 10: submit evidence through the visible file picker.

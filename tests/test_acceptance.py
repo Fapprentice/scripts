@@ -226,6 +226,13 @@ class TestAcceptanceRules(unittest.TestCase):
         self.assertFalse(ar["pass"])
         self.assertTrue(ar["next_actions"])
 
+    def test_stage_skill_identity_survives_public_check_normalization(self):
+        ar = acceptance.explainable_result({"status": "partial", "checks": [
+            {"skill_id": "python.control.loop", "status": "passed", "evidence": "all inputs"},
+        ]})
+        self.assertEqual(ar["status"], "partial")
+        self.assertEqual(ar["checks"][0]["skill_id"], "python.control.loop")
+
     def test_build_remediation_task_keeps_original_acceptance_and_goal(self):
         task = {"id": "t1", "title": "完成原型", "acceptance": "原型可以运行",
                 "expected_output": "可运行原型", "estimated_minutes": 40, "goal_id": "goal_0"}

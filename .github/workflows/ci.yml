@@ -55,6 +55,12 @@ jobs:
           if (-not (Test-Path dist\TaskVerge\TaskVerge.exe)) { throw "TaskVerge.exe was not built" }
           $version = (Get-Content VERSION -Raw).Trim()
           if (-not (Test-Path "task-verge-portable-v$version-win-x64.zip")) { throw "Portable ZIP was not built" }
+          if (-not (Test-Path dist\TaskVerge\_internal\packs\python-intro\v2.json)) { throw "Skill Pack data missing from release" }
+          $smokeData = Join-Path $env:RUNNER_TEMP ("taskverge-release-smoke-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $smokeData | Out-Null
+          $env:LOCALAPPDATA = $smokeData
+          & .\dist\TaskVerge\TaskVerge.exe --pack-smoke
+          if ($LASTEXITCODE -ne 0) { throw "Packaged skill planning smoke failed" }
 
   e2e:
     runs-on: windows-latest
@@ -75,15 +81,16 @@ jobs:
           $dataDir = Join-Path $env:RUNNER_TEMP ("taskverge-ci-" + [guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $dataDir | Out-Null
           $env:LOCALAPPDATA = $dataDir
+          $env:TASKVERGE_PORT = "0"
           $stdout = Join-Path $dataDir "server.out"
           $stderr = Join-Path $dataDir "server.err"
           $server = Start-Process python -ArgumentList @("task-panel.pyw", "--ci") -WorkingDirectory $env:GITHUB_WORKSPACE -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           "TASKVERGE_CI_PID=$($server.Id)" | Add-Content $env:GITHUB_ENV
           "TASKVERGE_CI_DATA_DIR=$dataDir" | Add-Content $env:GITHUB_ENV
+          $urlFile = Join-Path $dataDir "TaskVerge\task-panel.url"
           for ($i = 0; $i -lt 100; $i++) {
-            $line = if (Test-Path $stdout) { Get-Content $stdout | Select-String "^CI_URL=" | Select-Object -Last 1 }
-            if ($line) {
-              $url = $line.ToString().Substring(7)
+            if (Test-Path $urlFile) {
+              $url = (Get-Content $urlFile -Raw).Trim()
               try { Invoke-WebRequest -Uri ($url + "api/heartbeat") -UseBasicParsing -TimeoutSec 2 | Out-Null; break } catch {}
             }
             Start-Sleep -Milliseconds 100
@@ -96,25 +103,72 @@ jobs:
         if: always()
         shell: pwsh
         run: Stop-Process -Id $env:TASKVERGE_CI_PID -Force -ErrorAction SilentlyContinue
+      - name: Start fresh Task Verge for save-pending browser regression
+        shell: pwsh
+        run: |
+          $pendingDataDir = Join-Path $env:TASKVERGE_CI_DATA_DIR "save-pending-data"
+          New-Item -ItemType Directory -Path $pendingDataDir | Out-Null
+          $env:LOCALAPPDATA = $pendingDataDir
+          $env:TASKVERGE_PORT = "0"
+          $stdout = Join-Path $env:TASKVERGE_CI_DATA_DIR "save-pending-server.out"
+          $server = Start-Process python -ArgumentList @("task-panel.pyw", "--ci") -WorkingDirectory $env:GITHUB_WORKSPACE -RedirectStandardOutput $stdout -RedirectStandardError (Join-Path $env:TASKVERGE_CI_DATA_DIR "save-pending-server.err") -PassThru
+          "TASKVERGE_CI_PID=$($server.Id)" | Add-Content $env:GITHUB_ENV
+          $urlFile = Join-Path $pendingDataDir "TaskVerge\task-panel.url"
+          for ($i = 0; $i -lt 100; $i++) {
+            if (Test-Path $urlFile) { $url = (Get-Content $urlFile -Raw).Trim(); break }
+            Start-Sleep -Milliseconds 100
+          }
+          if (-not $url) { throw "Save-pending browser server did not publish a URL" }
+          "TASKVERGE_TEST_URL=$url" | Add-Content $env:GITHUB_ENV
+      - name: Run save-pending browser regression
+        run: python -m pytest tests/test_ui_evidence_save_pending.py -v --timeout=180
+      - name: Stop save-pending browser instance
+        if: always()
+        shell: pwsh
+        run: Stop-Process -Id $env:TASKVERGE_CI_PID -Force -ErrorAction SilentlyContinue
+      - name: Start fresh Task Verge for start-pending browser regression
+        shell: pwsh
+        run: |
+          $startDataDir = Join-Path $env:TASKVERGE_CI_DATA_DIR "start-pending-data"
+          New-Item -ItemType Directory -Path $startDataDir | Out-Null
+          $env:LOCALAPPDATA = $startDataDir
+          $env:TASKVERGE_PORT = "0"
+          $stdout = Join-Path $env:TASKVERGE_CI_DATA_DIR "start-pending-server.out"
+          $server = Start-Process python -ArgumentList @("task-panel.pyw", "--ci") -WorkingDirectory $env:GITHUB_WORKSPACE -RedirectStandardOutput $stdout -RedirectStandardError (Join-Path $env:TASKVERGE_CI_DATA_DIR "start-pending-server.err") -PassThru
+          "TASKVERGE_CI_PID=$($server.Id)" | Add-Content $env:GITHUB_ENV
+          $urlFile = Join-Path $startDataDir "TaskVerge\task-panel.url"
+          for ($i = 0; $i -lt 100; $i++) {
+            if (Test-Path $urlFile) { $url = (Get-Content $urlFile -Raw).Trim(); break }
+            Start-Sleep -Milliseconds 100
+          }
+          if (-not $url) { throw "Start-pending browser server did not publish a URL" }
+          "TASKVERGE_TEST_URL=$url" | Add-Content $env:GITHUB_ENV
+      - name: Run start-pending browser regression
+        run: python -m pytest tests/test_ui_start_pending.py -v --timeout=180
+      - name: Stop start-pending browser instance
+        if: always()
+        shell: pwsh
+        run: Stop-Process -Id $env:TASKVERGE_CI_PID -Force -ErrorAction SilentlyContinue
       - name: Start fresh Task Verge for browser E2E
         shell: pwsh
         run: |
           $browserDataDir = Join-Path $env:TASKVERGE_CI_DATA_DIR "browser-data"
           New-Item -ItemType Directory -Path $browserDataDir | Out-Null
           $env:LOCALAPPDATA = $browserDataDir
+          $env:TASKVERGE_PORT = "0"
           $stdout = Join-Path $env:TASKVERGE_CI_DATA_DIR "browser-server.out"
           $server = Start-Process python -ArgumentList @("task-panel.pyw", "--ci") -WorkingDirectory $env:GITHUB_WORKSPACE -RedirectStandardOutput $stdout -RedirectStandardError (Join-Path $env:TASKVERGE_CI_DATA_DIR "browser-server.err") -PassThru
           "TASKVERGE_CI_PID=$($server.Id)" | Add-Content $env:GITHUB_ENV
+          $urlFile = Join-Path $browserDataDir "TaskVerge\task-panel.url"
           for ($i = 0; $i -lt 100; $i++) {
-            $line = if (Test-Path $stdout) { Get-Content $stdout | Select-String "^CI_URL=" | Select-Object -Last 1 }
-            if ($line) { $url = $line.ToString().Substring(7); break }
+            if (Test-Path $urlFile) { $url = (Get-Content $urlFile -Raw).Trim(); break }
             Start-Sleep -Milliseconds 100
           }
           if (-not $url) { throw "Browser CI server did not publish a URL" }
           "TASKVERGE_TEST_URL=$url" | Add-Content $env:GITHUB_ENV
       - name: Run browser E2E tests
         run: >-
-          python -m pytest tests/test_e2e_main_flow.py tests/test_e2e_regressions.py tests/test_ui_full_flow.py
+          python -m pytest tests/test_ui_evidence_roundtrip.py tests/test_e2e_main_flow.py tests/test_e2e_regressions.py tests/test_ui_full_flow.py
           -v --timeout=180
       - name: Upload E2E diagnostics on failure
         if: failure()

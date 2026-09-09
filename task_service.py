@@ -31,6 +31,7 @@ class TaskService:
                 task["actual_seconds"] = round(previous_seconds + max(0, time.time() - datetime.fromisoformat(task["started_at"]).timestamp()), 3)
             except (TypeError, ValueError): pass
             task["ended_at"] = datetime.now().isoformat()
+            task["started_at"] = ""
         if status == "partial": task["continuation_note"] = self.text(continuation_note)[:500]
         if next_action: task["next_action"] = self.text(next_action)[:500]
         task["status"] = status; state["tasks"] = tasks

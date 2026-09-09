@@ -698,12 +698,35 @@ class SqliteStore:
             db.execute("UPDATE attachments SET stored_path=?,trashed_at=? WHERE stored_path=?", (str(target),datetime.now().isoformat(),str(source)))
         return str(target)
 
+    def _managed_trash_path(self, path):
+        """Resolve a trash path without allowing symlink/junction escapes."""
+        root = self.trash_dir.resolve()
+        try:
+            candidate = Path(path).resolve(strict=False)
+        except (OSError, RuntimeError, TypeError):
+            return None
+        return candidate if candidate != root and root in candidate.parents else None
+
     def purge_trash(self, days=30):
         cutoff = datetime.now() - timedelta(days=days); removed = 0
         with self._lock, self._connect() as db:
             for digest, path, timestamp in db.execute("SELECT sha256,stored_path,trashed_at FROM attachments WHERE trashed_at IS NOT NULL").fetchall():
-                if datetime.fromisoformat(timestamp) <= cutoff:
-                    Path(path).unlink(missing_ok=True); db.execute("DELETE FROM attachments WHERE sha256=?", (digest,)); removed += 1
+                try:
+                    expired = datetime.fromisoformat(timestamp) <= cutoff
+                except (TypeError, ValueError):
+                    self._log("TRASH_INVALID_TIMESTAMP {}: {}".format(digest, timestamp))
+                    continue
+                if not expired: continue
+                managed = self._managed_trash_path(path)
+                if managed is None:
+                    self._log("TRASH_UNSAFE_PATH {}: {}".format(digest, path))
+                else:
+                    try:
+                        Path(path).unlink(missing_ok=True)
+                    except OSError as exc:
+                        self._log("TRASH_DELETE_FAIL {}: {}".format(digest, exc))
+                        continue
+                db.execute("DELETE FROM attachments WHERE sha256=?", (digest,)); removed += 1
         return removed
 
     def export_complete(self, target):
@@ -744,7 +767,13 @@ class SqliteStore:
                 db.execute("PRAGMA foreign_keys=ON"); path_mapping = {}
                 rows = db.execute("SELECT sha256,stored_path,trashed_at FROM attachments").fetchall()
                 for digest, old_path, trashed_at in rows:
-                    if trashed_at: continue
+                    if trashed_at:
+                        # Trash contents are intentionally not part of a portable
+                        # export. Keep the imported tombstone inside our own
+                        # managed trash so a later purge cannot touch the source.
+                        placeholder = self.trash_dir / ("imported-" + str(digest))
+                        db.execute("UPDATE attachments SET stored_path=? WHERE sha256=?", (str(placeholder), digest))
+                        continue
                     matches = list(imported_attachments.rglob(digest + "*"))
                     if len(matches) != 1 or self._hash(matches[0]) != digest:
                         raise StorageCorruptionError("backup attachment check failed: {}".format(digest))

@@ -1,14 +1,16 @@
 """FSRS scheduling and the per-goal skill map."""
 
+import acceptance
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fsrs import Card, Rating, Scheduler, State
 from utils import task_actual_minutes
 
-PACKS_DIR = Path(__file__).resolve().parent / "packs"
+PACKS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "packs"
 _PACK_CACHE = None
 
 
@@ -105,24 +107,44 @@ def evaluate_stage_outcome(task, outcome):
         return {"status": "needs_review", "reason": "invalid stage status", "skill_observations": []}
     observations = outcome.get("skill_observations")
     observations = observations if isinstance(observations, list) else []
-    required = [str(item).strip() for item in task.get("required_skill_ids") or [] if str(item).strip()]
+    evidence_refs = outcome.get("evidence_refs")
+    evidence_refs = [item for item in evidence_refs if isinstance(item, str) and item.strip()] if isinstance(evidence_refs, list) else []
+    evidence_facts = outcome.get("evidence_facts")
+    evidence_facts = evidence_facts if isinstance(evidence_facts, list) else []
+    pack = resolve_pack(pack_id=task.get("pack_id"), pack_version=task.get("pack_version"))
+    template = get_stage_template(pack, task.get("stage_id")) if pack else None
+    trusted_contract = bool(template and str(template.get("template_revision")) == str(task.get("template_revision")))
+    required = [str(item).strip() for item in ((template or {}).get("required_skill_ids") if trusted_contract else task.get("required_skill_ids") or []) if str(item).strip()]
     by_skill = {str(item.get("skill_id") or "").strip(): item for item in observations if isinstance(item, dict)}
     # Legacy stage submissions may carry only a unified evidence reference;
     # when observations are supplied, every required skill must pass before the
     # result can remain passed. This keeps the stage seam backward compatible
     # without allowing partial observations to masquerade as a pass.
-    if status == "passed" and task.get("observations_required") and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
+    missing_observations = not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)
+    missing_observation_evidence = any(
+        not str(by_skill.get(skill_id, {}).get("evidence") or by_skill.get(skill_id, {}).get("detail") or "").strip()
+        for skill_id in required
+    )
+    reason = str(outcome.get("reason") or "")
+    if status == "passed" and (task.get("observations_required") or required) and (missing_observations or missing_observation_evidence or not evidence_refs):
         status = "partial"
-    elif status == "passed" and observations and (not required or any(str(by_skill.get(skill_id, {}).get("status") or "") != "passed" for skill_id in required)):
+    elif status == "passed" and observations and (missing_observations or missing_observation_evidence or not evidence_refs):
         status = "partial"
+    elif status == "passed":
+        if not trusted_contract:
+            status, evidence_reason = "needs_review", "阶段合同版本无法确认"
+        else:
+            contract_task = dict(task, required_skill_ids=required, skill_checks=dict(template.get("skill_checks") or {}))
+            status, evidence_reason = _stage_evidence_verdict(contract_task, evidence_facts)
+        reason = reason or evidence_reason
     attribution = []
     for skill_id in required:
         item = by_skill.get(skill_id)
         if item and str(item.get("status") or "") in ("failed", "blocked"):
             attribution.append({"skill_id": skill_id, "status": str(item.get("status")), "reason": str(item.get("reason") or "该节点观察点未通过")})
-    return {"status": status, "reason": str(outcome.get("reason") or ""),
+    return {"status": status, "reason": reason,
             "skill_observations": observations, "attribution": attribution,
-            "evidence_refs": list(outcome.get("evidence_refs") or []) if isinstance(outcome.get("evidence_refs"), list) else []}
+            "evidence_refs": evidence_refs}
 
 
 def _stage_due_days(skill, now):
@@ -232,6 +254,30 @@ def instantiate_stage_task(pack, stage_id, proposal):
     return task
 
 
+def _stage_evidence_verdict(task, facts):
+    files = [item for item in facts if isinstance(item, dict) and item.get("exists")]
+    py_files = [item for item in files if str(item.get("path") or "").lower().endswith(".py")]
+    if not py_files:
+        return "needs_review", "缺少可核验的 Python 程序附件"
+    # Reuse the existing hard acceptance gate. A compiled AST is not execution
+    # evidence; only a server-produced sandbox result can enter the pass path.
+    check = acceptance._r4_docker_run(task, {"files": [
+        {"path": item.get("path", ""), "docker_run": item.get("safe_execution")}
+        for item in py_files
+    ]})
+    if not check.pass_:
+        return "blocked", check.detail
+    executions = [item.get("safe_execution") for item in py_files
+                  if isinstance(item.get("safe_execution"), dict)]
+    if not executions or not all(
+        execution.get("all_materials") is True and
+        execution.get("branch_loop_same_output") is True
+        for execution in executions
+    ):
+        return "needs_review", "沙箱运行成功，但缺少与阶段合同对应的完整性证明"
+    return "passed", "受支持的沙箱运行与阶段合同检查通过"
+
+
 def record_stage_outcome(state, task, outcome, now=None):
     """Persist integration evidence without changing node mastery."""
     state = state if isinstance(state, dict) else {}
@@ -240,16 +286,27 @@ def record_stage_outcome(state, task, outcome, now=None):
     evidence = state.setdefault("user_model", {}).setdefault("integration_evidence", [])
     task_id = str(task.get("id") or task.get("stage_id") or "stage")
     existing = next((item for item in evidence if item.get("task_id") == task_id), None)
+    attempt = dict(result, ts=_utc(now).isoformat())
     if existing:
-        return existing
-    record = dict(result, task_id=task_id, stage_id=task.get("stage_id", ""),
-                  ts=_utc(now).isoformat())
-    evidence.append(record)
+        previous = {
+            key: existing.get(key) for key in ("status", "reason", "skill_observations", "attribution", "evidence_refs")
+        }
+        if existing.get("status") == "passed" and previous == {key: attempt.get(key) for key in previous}:
+            return existing
+        existing.setdefault("attempts", []).append(attempt)
+        if existing.get("status") != "passed":
+            existing.update(attempt)
+        result = existing
+    else:
+        record = dict(result, task_id=task_id, stage_id=task.get("stage_id", ""),
+                      ts=attempt["ts"], attempts=[attempt])
+        evidence.append(record)
+        result = record
     events = state.setdefault("events", [])
     if result["status"] == "passed":
         if not any(event.get("kind") == "stage_completed" and event.get("task_id") == task_id for event in events if isinstance(event, dict)):
             events.append({"kind": "stage_completed", "task_id": task_id, "stage_id": task.get("stage_id", ""), "ts": _utc(now).isoformat()})
-    return record
+    return result
 
 
 def migrate_legacy_tasks(state):
@@ -353,21 +410,63 @@ def outcome_failure_trace(task, failed_criterion_ids, state=None):
     return trace
 
 
-def evaluate_outcome(task, outcome):
+def evaluate_outcome(task, outcome, criterion_judge=None):
     task = task if isinstance(task, dict) else {}
     outcome = outcome if isinstance(outcome, dict) else {}
     criteria = [item for item in task.get("criteria") or [] if isinstance(item, dict) and item.get("id")]
     evidence = outcome.get("criterion_evidence") if isinstance(outcome.get("criterion_evidence"), dict) else {}
+    def evidence_state(criterion, ref):
+        if not isinstance(ref, dict) or ref.get("verified") is not True:
+            return "needs_review"
+        kind = ref.get("kind")
+        if kind == "attachment":
+            reference, content = ref.get("ref"), ref.get("content")
+        elif kind == "direct_text":
+            reference, content = "direct_text", ref.get("text")
+        else:
+            return "needs_review"
+        if not isinstance(reference, str) or not reference.strip() or not isinstance(content, str) or not content.strip():
+            return "failed"
+        reference = reference.strip()
+        if reference.casefold() in {"null", "none", "undefined"} or not content.strip():
+            return "failed"
+        if not criterion_judge:
+            return "needs_review"
+        try:
+            verdict = criterion_judge(criterion, reference, str(content or ""))
+        except Exception:
+            return "needs_review"
+        if not isinstance(verdict, dict):
+            return "needs_review"
+        if verdict.get("criterion_id") != criterion["id"] or not isinstance(verdict.get("pass"), bool):
+            return "needs_review"
+        uncertainty_value = verdict.get("uncertainty")
+        if isinstance(uncertainty_value, bool) or not isinstance(uncertainty_value, (int, float)):
+            return "needs_review"
+        uncertainty = float(uncertainty_value)
+        if not 0 <= uncertainty <= 1:
+            return "needs_review"
+        if uncertainty >= 0.25 or verdict.get("status") == "needs_review":
+            return "needs_review"
+        if verdict["pass"] is True:
+            return "passed"
+        return "failed"
+
     rows = []
+    needs_review = []
     for criterion in criteria:
         value = evidence.get(criterion["id"])
-        refs = value if isinstance(value, list) else ([value] if value else [])
-        rows.append({"criterion_id": criterion["id"], "passed": bool(refs), "evidence_refs": refs, "text": criterion.get("text", "")})
-    status = "passed" if rows and all(row["passed"] for row in rows) else "failed"
-    failed = [row["criterion_id"] for row in rows if not row["passed"]]
+        refs = value if isinstance(value, list) else ([value] if value is not None else [])
+        states = [evidence_state(criterion, ref) for ref in refs]
+        passed = any(state == "passed" for state in states)
+        if not passed and any(state == "needs_review" for state in states): needs_review.append(criterion["id"])
+        rows.append({"criterion_id": criterion["id"], "passed": passed, "evidence_refs": refs, "text": criterion.get("text", "")})
+    failed = [row["criterion_id"] for row in rows if not row["passed"] and row["criterion_id"] not in needs_review]
+    status = "passed" if rows and not failed and not needs_review else ("needs_review" if rows and not failed else "failed")
     return {"status": status, "criterion_results": rows, "failed_criterion_ids": failed,
-            "next_actions": ["补充缺失成功标准的独立证据"] if failed else [],
-            "failure_trace": outcome_failure_trace(task, failed),
+            "needs_review_criterion_ids": needs_review,
+            "next_actions": (["补充能对应成功标准的独立证据"] if failed else []) + (["人工复核成功标准对应的证据"] if needs_review else []),
+            "failure_trace": outcome_failure_trace(task, failed + needs_review),
             "evidence_target": "criterion"}
 
 

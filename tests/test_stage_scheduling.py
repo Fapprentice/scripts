@@ -79,12 +79,47 @@ def test_learning_day_aging_is_persisted_and_next_task_can_schedule_explicit_sta
 def test_stage_settlement_persists_integration_once_without_changing_mastery():
     state, pack = _ready_state(); task = dict(_proposal(pack), id="stage-1", task_kind="stage")
     before = deepcopy(state["user_model"]["skills"])
-    evidence = learning.record_stage_outcome(state, task, {"status": "passed", "evidence_refs": ["run.txt"]}, NOW)
-    again = learning.record_stage_outcome(state, task, {"status": "passed", "evidence_refs": ["run.txt"]}, NOW)
+    outcome = {"status": "passed", "evidence_refs": ["run.txt"], "skill_observations": [
+        {"skill_id": "python.control.branch", "status": "passed", "evidence": "two paths"},
+        {"skill_id": "python.control.loop", "status": "passed", "evidence": "all inputs looped"},
+    ], "evidence_facts": [{"path": "run.py", "exists": True, "python_ok": True,
+                                "content": "for value in [1]:\n    if value:\n        print(value)\n",
+                                "safe_execution": {"source": "docker", "skipped": False, "ok": True,
+                                                    "all_materials": True, "branch_loop_same_output": True,
+                                                    "stdout": "verified"}}]}
+    evidence = learning.record_stage_outcome(state, task, outcome, NOW)
+    again = learning.record_stage_outcome(state, task, outcome, NOW)
     assert evidence == again
     assert len(state["user_model"]["integration_evidence"]) == 1
     assert [event["kind"] for event in state["events"]] == ["stage_completed"]
     assert state["user_model"]["skills"] == before
+
+
+def test_stage_failure_then_valid_retry_updates_one_ledger_record_once():
+    state, pack = _ready_state(); task = dict(_proposal(pack), id="stage-retry", task_kind="stage")
+    failed = learning.record_stage_outcome(state, task, {"status": "partial", "evidence_refs": ["bad.txt"]}, NOW)
+    failed_status = failed["status"]
+    passed = learning.record_stage_outcome(state, task, {"status": "passed", "evidence_refs": ["run.txt"], "skill_observations": [
+        {"skill_id": "python.control.branch", "status": "passed", "evidence": "two paths"},
+        {"skill_id": "python.control.loop", "status": "passed", "evidence": "all inputs looped"},
+    ], "evidence_facts": [{"path": "run.py", "exists": True, "python_ok": True,
+                                "content": "for value in [1]:\n    if value:\n        print(value)\n",
+                                "safe_execution": {"source": "docker", "skipped": False, "ok": True,
+                                                    "all_materials": True, "branch_loop_same_output": True,
+                                                    "stdout": "verified"}}]}, NOW)
+    duplicate = learning.record_stage_outcome(state, task, {"status": "passed", "evidence_refs": ["run.txt"], "skill_observations": [
+        {"skill_id": "python.control.branch", "status": "passed", "evidence": "two paths"},
+        {"skill_id": "python.control.loop", "status": "passed", "evidence": "all inputs looped"},
+    ], "evidence_facts": [{"path": "run.py", "exists": True, "python_ok": True,
+                                "content": "for value in [1]:\n    if value:\n        print(value)\n",
+                                "safe_execution": {"source": "docker", "skipped": False, "ok": True,
+                                                    "all_materials": True, "branch_loop_same_output": True,
+                                                    "stdout": "verified"}}]}, NOW)
+    assert failed_status == "partial"
+    assert passed["status"] == duplicate["status"] == "passed"
+    assert len(state["user_model"]["integration_evidence"]) == 1
+    assert len(state["user_model"]["integration_evidence"][0]["attempts"]) == 2
+    assert [event["kind"] for event in state["events"]] == ["stage_completed"]
 
 
 def test_stage_failure_and_needs_review_do_not_rollback_or_emit_growth():

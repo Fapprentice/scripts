@@ -172,6 +172,7 @@ def normalize_task(t, goal_id="", idx=0, done=False):
             "contract_revision": max(1, _nat(t.get("contract_revision") or 1)),
             "mastery_evidence": dict(t.get("mastery_evidence")) if isinstance(t.get("mastery_evidence"), dict) else {},
             "stage_id": task_text(t.get("stage_id")),
+            "observations_required": bool(t.get("observations_required", False)),
             "template_revision": t.get("template_revision"),
             "pack_id": task_text(t.get("pack_id")),
             "pack_version": task_text(t.get("pack_version")),

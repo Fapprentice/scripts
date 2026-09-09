@@ -1,3 +1,4 @@
+import task_service
 from task_service import TaskService
 from datetime import datetime, timedelta
 
@@ -50,3 +51,18 @@ def test_task_timer_pauses_in_seconds_and_resumes_from_total():
     total = state["tasks"][0]["actual_seconds"]
     service.set_status(state, 0, "doing")
     assert state["tasks"][0]["actual_seconds"] == total
+
+
+def test_pause_closes_segment_so_later_acceptance_cannot_recount_paused_time(monkeypatch):
+    service = TaskService(text=str, normalize=lambda tasks, goal, flags: tasks,
+        goal_id=lambda state: "g1", sync_pct=lambda state: None, save=lambda state: None,
+        event=lambda *args: None, undo=lambda *args: None, compact=lambda state: None)
+    now = 1_700_000_600
+    monkeypatch.setattr(task_service.time, "time", lambda: now)
+    state = {"tasks": [{"status": "doing", "started_at": datetime.fromtimestamp(now - 600).isoformat()}], "done_flags": [False]}
+    service.set_status(state, 0, "paused")
+    assert state["tasks"][0]["actual_seconds"] == 600
+    assert state["tasks"][0]["started_at"] == ""
+    monkeypatch.setattr(task_service.time, "time", lambda: now + 600)
+    service.set_status(state, 0, "paused")
+    assert state["tasks"][0]["actual_seconds"] == 600

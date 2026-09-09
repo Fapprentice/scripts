@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -102,6 +103,40 @@ def test_sqlite_store_deduplicates_and_trashes_attachments(tmp_path):
     assert store.check_integrity()["ok"] is True
     store.trash_attachment(restored)
     assert store.purge_trash(days=0) == 1
+
+
+def test_imported_expired_external_trash_record_never_deletes_external_file(tmp_path):
+    source = SqliteStore(tmp_path / "source", auto_backup=False)
+    external = tmp_path / "external.txt"
+    external.write_text("must survive", encoding="utf-8")
+    with source._lock, source._connect() as db:
+        db.execute("INSERT INTO attachments VALUES (?,?,?,?,?,?)", (
+            "deadbeef", str(external), "external.txt", external.stat().st_size,
+            "2026-01-01T00:00:00", "2026-01-02T00:00:00"))
+    package = source.export_complete(tmp_path / "unsafe.tvbackup")
+    target = SqliteStore(tmp_path / "target", auto_backup=False)
+    target.import_complete(package)
+    assert target.purge_trash(days=0) == 1
+    assert external.read_text(encoding="utf-8") == "must survive"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junction boundary is Windows-specific")
+def test_purge_trash_does_not_follow_junction_outside_managed_trash(tmp_path):
+    store = SqliteStore(tmp_path / "store", auto_backup=False)
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    external = external_dir / "must-survive.txt"
+    external.write_text("must survive", encoding="utf-8")
+    junction = store.trash_dir / "junction"
+    junction.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(external_dir)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr or result.stdout
+    with store._lock, store._connect() as db:
+        db.execute("INSERT INTO attachments VALUES (?,?,?,?,?,?)", (
+            "junction-digest", str(junction / external.name), external.name, external.stat().st_size,
+            "2026-01-01T00:00:00", "2026-01-02T00:00:00"))
+    assert store.purge_trash(days=0) == 1
+    assert external.read_text(encoding="utf-8") == "must survive"
 
 
 def test_sqlite_store_migrates_legacy_upload_paths_in_documents(tmp_path):

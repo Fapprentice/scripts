@@ -179,17 +179,26 @@ def compact_state(c):
 def cleanup_uploads(c):
     root=P.get("uploads")
     if not root or not os.path.isdir(root): return
+    root=os.path.normcase(os.path.realpath(root))
     keep=set()
-    for arr in c.get("tasks_by_goal",{}).values():
-        for t in arr if isinstance(arr,list) else []:
-            ev=t.get("evidence") if isinstance(t,dict) else ""
-            ev_list = as_list(ev) if isinstance(ev, list) else ([ev] if value_text(ev) else [])
-            for e in ev_list:
-                if e and os.path.abspath(e).startswith(os.path.abspath(root)): keep.add(os.path.abspath(e).lower())
+    def collect(value):
+        if isinstance(value, str) and value.strip():
+            candidate=os.path.normcase(os.path.realpath(value))
+            try:
+                if os.path.commonpath((root,candidate)) == root:
+                    keep.add(candidate)
+            except ValueError:
+                pass
+        elif isinstance(value, dict):
+            for item in value.values(): collect(item)
+        elif isinstance(value, list):
+            for item in value: collect(item)
+    # Archives and learning ledgers are durable evidence owners too.
+    collect(c)
     for dirpath,_,files in os.walk(root,topdown=False):
         for name in files:
             fp=os.path.abspath(os.path.join(dirpath,name))
-            if fp.lower() not in keep:
+            if os.path.normcase(os.path.realpath(fp)) not in keep:
                 try: STORE.trash_attachment(fp)
                 except (OSError, ValueError): pass
         try:
@@ -712,10 +721,91 @@ def evidence_details(evidence, response=""):
     response_text=json.dumps(response,ensure_ascii=False) if isinstance(response,(dict,list)) else task_text(response)
     return {"files": files, "count": len(files), "text": response_text}
 
+def stage_evidence_facts(evidence):
+    facts = []
+    for item in evidence_details(evidence).get("files", []):
+        fact = {"path": item.get("path", ""), "exists": bool(item.get("exists")),
+                "python_ok": bool(item.get("python_check", {}).get("ok"))}
+        if fact["exists"]:
+            try:
+                with open(fact["path"], encoding="utf-8", errors="replace") as handle:
+                    fact["content"] = handle.read(200000)
+            except OSError:
+                fact["exists"] = False
+        facts.append(fact)
+    return facts
+
+def outcome_evidence_facts(criterion_evidence):
+    """Resolve criterion evidence at the server boundary before judging it."""
+    resolved = {}
+    for criterion_id, refs in (criterion_evidence.items() if isinstance(criterion_evidence, dict) else []):
+        rows = []
+        values = refs if isinstance(refs, list) else [refs]
+        for raw in values:
+            if isinstance(raw, str):
+                paths = valid_evidence_paths([raw])
+                if len(paths) == 1:
+                    raw = {"kind": "attachment", "ref": paths[0]}
+                elif _looks_like_evidence_path(raw):
+                    raw = {"kind": "invalid", "ref": raw}
+                else:
+                    raw = {"kind": "direct_text", "text": raw}
+            if isinstance(raw, dict) and raw.get("kind") == "direct_text":
+                text = raw.get("text")
+                if isinstance(text, str) and text.strip() and len(text) <= 20000:
+                    rows.append({"kind": "direct_text", "text": text, "verified": True})
+                else:
+                    rows.append({"kind": "invalid", "verified": False})
+                continue
+            reference = raw.get("ref") or raw.get("path") if isinstance(raw, dict) else raw
+            paths = valid_evidence_paths([reference]) if isinstance(reference, str) else []
+            if len(paths) != 1:
+                rows.append({"kind": "invalid", "ref": str(reference or ""), "verified": False})
+                continue
+            try:
+                with open(paths[0], encoding="utf-8", errors="replace") as handle:
+                    content = handle.read(200000)
+            except OSError:
+                rows.append({"kind": "invalid", "ref": paths[0], "verified": False})
+                continue
+            rows.append({"kind": "attachment", "ref": paths[0], "content": content, "verified": True})
+        resolved[str(criterion_id)] = rows
+    return resolved
+
+def _looks_like_evidence_path(value):
+    text = str(value or "").strip()
+    return bool(text) and (os.path.isabs(text) or "/" in text or "\\" in text or (
+        os.path.splitext(os.path.basename(text))[1] and not any(char.isspace() for char in text)))
+
+def canonical_criterion_evidence(criterion_evidence):
+    """Store only typed references/text; verified facts are made at evaluation."""
+    result = {}
+    for criterion_id, refs in (criterion_evidence.items() if isinstance(criterion_evidence, dict) else []):
+        rows = []
+        for raw in refs if isinstance(refs, list) else [refs]:
+            if isinstance(raw, str):
+                rows.append(raw)
+            elif isinstance(raw, dict) and raw.get("kind") == "direct_text":
+                text = raw.get("text")
+                if isinstance(text, str) and text.strip(): rows.append({"kind": "direct_text", "text": text})
+            elif isinstance(raw, dict) and (raw.get("kind") == "attachment" or raw.get("ref") or raw.get("path")):
+                reference = raw.get("ref") or raw.get("path")
+                rows.append({"kind": "attachment", "ref": str(reference or "")})
+            else:
+                rows.append({"kind": "invalid"})
+        result[str(criterion_id)] = rows
+    return result
+
 def valid_evidence_paths(evidence):
-    root=os.path.abspath(P["uploads"])
-    return [os.path.abspath(p) for p in as_list(evidence)
-            if path_under(root,os.path.abspath(p)) and os.path.isfile(os.path.abspath(p))]
+    root=os.path.realpath(P["uploads"])
+    paths = []
+    for value in as_list(evidence):
+        if not isinstance(value, str):
+            continue
+        path = os.path.realpath(os.path.abspath(value))
+        if path_under(root, path) and os.path.isfile(path):
+            paths.append(path)
+    return paths
 
 def compact_evidence_basis(details):
     return [{"files": [{"path": f.get("path", ""), "exists": bool(f.get("exists")),
@@ -898,31 +988,59 @@ def cli_gen():
     print(gen_tasks())
 
 def reset_task_timer(task):
-    task["actual_seconds"] = 0
+    # Keep accumulated work; only close the currently running segment.
+    if task.get("status") == "doing" and task.get("started_at"):
+        try:
+            elapsed=max(0,time.time()-datetime.fromisoformat(task["started_at"]).timestamp())
+            task["actual_seconds"]=round(float(task.get("actual_seconds",0) or 0)+elapsed,3)
+        except (TypeError,ValueError): pass
     task.pop("actual_minutes", None)
     task["started_at"] = ""
+    task["ended_at"] = datetime.now().isoformat()
 
 def evaluate_task(task_idx):
     c=ensure_goal_state(lc()); items=normalize_tasks(c.get("tasks",[]),gid(c),c.get("done_flags",[]))
     if task_idx<0 or task_idx>=len(items): raise ValueError("任务索引越界")
     task=items[task_idx]; evidence=as_list(task.get("evidence")); response=task.get("response"); cloud_enabled=bool(c.get("privacy",{}).get("cloud_ai_enabled",True))
     task_kind = str(task.get("task_kind") or "").strip()
+    criterion_judge = None
+    if task_kind == "outcome" and cloud_enabled and valid_deepseek_key(dk()):
+        def criterion_judge(criterion, reference, content):
+            try:
+                verdict = deepseek_json([
+                    {"role": "system", "content": "你是严格的成功标准裁判。只判断当前标准是否被证据实际满足；复制标准、空泛描述、无关文件不得通过。只返回 JSON：criterion_id、pass、uncertainty(0-1)、reason、evidence。证据不足时 pass=false 且 uncertainty>=0.25。"},
+                    {"role": "user", "content": json.dumps({"criterion_id": criterion.get("id"), "criterion": criterion, "reference": reference, "content": content[:4000]}, ensure_ascii=False)},
+                ], 1000, 0.1, 20, 0)
+                return verdict if isinstance(verdict, dict) else {"status": "needs_review"}
+            except Exception:
+                return {"status": "needs_review", "uncertainty": 1}
     if task_kind == "outcome":
-        eligibility = task.get("eligibility") if isinstance(task.get("eligibility"), dict) else {}
-        if task.get("locked") or eligibility.get("eligible") is False:
+        contract = goal_details(c)
+        contract["required_skill_ids"] = list(task.get("required_skill_ids") or [])
+        eligibility = adaptive.outcome_eligibility(c, contract, task.get("required_stage_ids") or [])
+        task["eligibility"] = eligibility
+        task["locked"] = not eligibility.get("eligible")
+        if not eligibility.get("eligible"):
             result = norm_acceptance_result({"pass": False, "status": "blocked",
                 "reason": "最终成果尚未满足资格门槛",
                 "missing": list(eligibility.get("missing_skill_ids") or []) + list(eligibility.get("missing_stage_ids") or []),
                 "next_steps": ["先完成所需节点和阶段门"]})
         else:
-            evaluated = adaptive.evaluate_outcome(task, {"criterion_evidence": task.get("criterion_evidence") or (response.get("criterion_evidence") if isinstance(response, dict) else {})})
+            criterion_evidence = task.get("criterion_evidence") or (response.get("criterion_evidence") if isinstance(response, dict) else {})
+            verified_evidence = outcome_evidence_facts(criterion_evidence)
+            evaluated = adaptive.evaluate_outcome(task, {"criterion_evidence": verified_evidence}, criterion_judge=criterion_judge)
             result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
                 "reason": "所有成功标准均有独立证据" if evaluated.get("status") == "passed" else "仍缺少成功标准的独立证据",
-                "missing": evaluated.get("failed_criterion_ids") or [], "checks": evaluated.get("criterion_results") or [],
+                "missing": (evaluated.get("failed_criterion_ids") or []) + (evaluated.get("needs_review_criterion_ids") or []), "checks": evaluated.get("criterion_results") or [],
                 "next_steps": evaluated.get("next_actions") or [],
                 "failure_trace": evaluated.get("failure_trace") or []})
     elif task_kind == "stage":
-        stage_input = response if isinstance(response, dict) else {}
+        stage_input = dict(response) if isinstance(response, dict) else {}
+        response_refs = [item for item in as_list(stage_input.get("evidence_refs")) if value_text(item)]
+        evidence = list(dict.fromkeys([item for item in evidence + response_refs if value_text(item)]))
+        task["evidence"] = evidence
+        stage_input["evidence_refs"] = evidence
+        stage_input["evidence_facts"] = stage_evidence_facts(evidence)
         evaluated = adaptive.evaluate_stage_outcome(task, stage_input)
         result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
             "reason": evaluated.get("reason") or "阶段观察点已记录",
@@ -957,9 +1075,16 @@ def evaluate_task(task_idx):
     c["tasks"]=items; c["done_flags"]=list(c.get("done_flags",[]))
     if task_kind == "stage":
         persisted_stage = adaptive.record_stage_outcome(c, task, {"status": result.get("status"), "reason": result.get("reason"),
-            "evidence_refs": evidence, "skill_observations": result.get("checks") or []})
+            "evidence_refs": evaluated.get("evidence_refs") or evidence, "evidence_facts": stage_input.get("evidence_facts") or [],
+            "skill_observations": result.get("checks") or []})
+        result = dict(result, status=persisted_stage.get("status"),
+            reason=persisted_stage.get("reason") or result.get("reason"))
+        result["pass"] = result.get("status") == "passed"
+        result = norm_acceptance_result(result)
         task["acceptance_result"] = result
         task["status"] = "done" if result.get("status") == "passed" else task.get("status") or "pending"
+        while len(c["done_flags"]) <= task_idx: c["done_flags"].append(False)
+        c["done_flags"][task_idx] = result.get("status") == "passed"
         c["tasks"] = items
         save_goal_state(c)
         ok, persisted = True, result
@@ -1384,9 +1509,38 @@ def _agent_orchestrator(c):
         c["agent_runs"]=copy.deepcopy(data)
         with _CFG_LOCK:
             latest=ensure_goal_state(lc()); latest["agent_runs"]=copy.deepcopy(data); sc(latest)
+    def save_run_if_current(candidate, expected_revision):
+        with _CFG_LOCK:
+            latest=ensure_goal_state(lc())
+            runs=copy.deepcopy(latest.get("agent_runs", {}) or {})
+            current=runs.get(candidate.get("run_id"))
+            if current and int(current.get("revision", 0) or 0) != int(expected_revision or 0):
+                return False
+            runs[candidate["run_id"]]=copy.deepcopy(candidate)
+            latest["agent_runs"]=runs
+            sc(latest)
+            return True
+    def pause_run_atomically(run_id, reason):
+        with _CFG_LOCK:
+            latest=ensure_goal_state(lc())
+            runs=copy.deepcopy(latest.get("agent_runs", {}) or {})
+            current=runs.get(run_id)
+            if not isinstance(current, dict): return None
+            paused=copy.deepcopy(current)
+            paused["status"]="paused"
+            errors=list(paused.get("errors", []) or [])
+            if reason and reason not in errors: errors.append(reason)
+            paused["errors"]=errors
+            paused["revision"]=int(current.get("revision", 0) or 0)+1
+            paused["updated_at"]=time.time()
+            runs[run_id]=paused
+            latest["agent_runs"]=runs
+            sc(latest)
+            return paused
     return _agent_mod.AgentOrchestrator(
         load_state=lambda:lc().get("agent_runs",{}), save_state=save_runs,
-        tools=_agent_tools(c), planner=planner)
+        tools=_agent_tools(c), planner=planner, atomic_save=save_run_if_current,
+        atomic_pause=pause_run_atomically)
 
 def _agent_loop(c, run_id):
     """Run bounded low-risk steps in the background; confirmation pauses it."""
@@ -2056,7 +2210,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not isinstance(criterion_evidence, dict): return self.send_json({"ok":False,"message":"最终成果必须按成功标准提交证据"},400)
                     unknown = set(criterion_evidence) - set(ts[i].get("criterion_ids") or [])
                     if unknown: return self.send_json({"ok":False,"message":"包含未知成功标准"},400)
-                    ts[i]["criterion_evidence"] = criterion_evidence
+                    ts[i]["criterion_evidence"] = canonical_criterion_evidence(criterion_evidence)
                 ts[i]["response"]=response; c["tasks"]=ts
                 save_goal_state(c); evlog(c,"task_response","保存页面作答",{"idx":i}); sc(c); return self.send_json({"ok":True})
             if self.path=="/api/task-rating":
@@ -2131,7 +2285,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path=="/api/agent-resume":
                 orch=_agent_orchestrator(c); run=orch.resume(task_text(data.get("run_id"))); return self.send_json({"ok":True,"run":run})
             if self.path=="/api/agent-stop":
-                orch=_agent_orchestrator(c); run=orch.stop(task_text(data.get("run_id")),task_text(data.get("reason")) or "user paused"); return self.send_json({"ok":True,"run":run})
+                try:
+                    orch=_agent_orchestrator(c); run=orch.stop(task_text(data.get("run_id")),task_text(data.get("reason")) or "user paused")
+                except Exception as exc:
+                    return self.send_json({"ok":False,"message":str(exc)},409)
+                if run.get("status") != "paused":
+                    return self.send_json({"ok":False,"message":"停止未能持久化，请刷新后重试","run":run},409)
+                return self.send_json({"ok":True,"run":run})
             if self.path=="/api/task-state":
                 try: i=int(data.get("idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
@@ -3075,6 +3235,15 @@ if __name__ == "__main__":
         if a=="--generate": cli_gen(); sys.exit(0)
         if a=="--evaluate": cli_eval(); sys.exit(0)
         if a=="--stats": cli_stats("--send-stats" in sys.argv); sys.exit(0)
+        if a=="--pack-smoke":
+            from learning import get_stage_template, load_packs, resolve_pack
+            packs={(str(pack.get("id")), str(pack.get("version"))): pack for pack in load_packs()}
+            for key in (("python-intro", "v1"), ("python-intro", "v2"), ("cet4", "v1")):
+                if key not in packs or resolve_pack(pack_id=key[0], pack_version=key[1]).get("version") != key[1]:
+                    raise SystemExit("missing skill pack: {}".format("/".join(key)))
+            if not get_stage_template(packs[("python-intro", "v2")], "python.stage.control-flow"):
+                raise SystemExit("missing python.stage.control-flow")
+            sys.exit(0)
         if a=="--ci":
             # CI mode: start HTTP server only, no tray, no desktop, no single-instance guard
             _bl("main: CI mode, starting web app only")
