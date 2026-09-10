@@ -867,6 +867,7 @@ function renderCurrentTaskBar(){
   const materialEntry=materials?`<button class="materials-entry" data-open-materials="${idx}"><span><b>任务材料</b><small>${materialCount?`${materialCount} 道题，点击查看并作答`:'点击查看完整材料'}</small></span><em>打开面板　›</em></button>`:'';
   const evidenceBox=criterionBox || (materials?'':`<div class="mission-evidence"><h4>证据上传</h4><label class="mission-upload"><input data-evidence-file="${idx}" type="file" multiple><b>⇧　${evidenceCount?`已上传 ${evidenceCount} 项，继续上传`:'点击上传文件或拖拽到此处'}</b><small>支持：PDF、DOCX、PNG、JPG，单个文件 ≤ 50MB</small></label></div>`);
   const missionFooter=task.status==='doing'?`<button data-session-action="pause" data-session-idx="${idx}">Ⅱ　暂停</button><button class="primary" data-ai-evaluate="${idx}">☑　提交验收</button>`:`<button class="primary" data-start-task="${idx}">开始任务</button>`;
+  const missionRating=task.skill_id&&((state.user_model?.skills||{})[task.skill_id]?.demonstration||task.demonstration||'recall')==='recall'?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:'';
   bar.className='current-task-bar mission-task';
   bar.innerHTML=`<article class="mission-card">
     <div class="mission-status"><span><i></i>${taskStatusLabel}${task.status==='doing'&&task.started_at?`　<small>开始于 ${new Date(task.started_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</small>`:''}</span><button data-goto-queue>查看历史任务</button></div>
@@ -880,8 +881,7 @@ function renderCurrentTaskBar(){
       <div><b>验收标准</b><span>${escapeHtml(task.acceptance||done)}</span></div>
     </div>
     ${task.skill_id?`<div class="mission-skill">${(()=>{ const node=skillNode; const hard=(state.knowledge_graph?.edges||[]).filter(edge=>edge.to===task.skill_id&&edge.kind!=='soft'); const missing=hard.filter(edge=>{ const parent=(state.knowledge_graph.nodes||[]).find(item=>item.id===edge.from)||{}; return !parent.contract_met && parent.band!=='skipped'; }).map(edge=>{ const parent=(state.knowledge_graph.nodes||[]).find(item=>item.id===edge.from)||{}; return parent.title||edge.from; }); const bits=[]; if(node.mastery_evidence?.threshold) bits.push('掌握：'+node.mastery_evidence.threshold); if(missing.length) bits.push('硬缺口：'+missing.join('、')); return `<b>技能</b><span>${escapeHtml(skillLabel)}</span>${bits.length?`<small>${escapeHtml(bits.join(' · '))}</small>`:''}`; })()}</div>`:''}
-    ${task.skill_id&&((state.user_model?.skills||{})[task.skill_id]?.demonstration||task.demonstration||'recall')==='recall'?`<div class="mission-rating"><b>回忆质量</b><div>${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${task.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${idx}">${label}</button>`).join('')}</div></div>`:''}
-    ${evidenceBox?`<div class="mission-evidence-action">${evidenceBox}<footer>${missionFooter}</footer></div>`:`<footer>${missionFooter}</footer>`}
+    ${evidenceBox?`${missionRating}<div class="mission-evidence-action">${evidenceBox}<footer>${missionFooter}</footer></div>`:`<div class="mission-rating-action">${missionRating}<footer>${missionFooter}</footer></div>`}
   </article>`;
   bar.querySelector('.mission-card')?.scrollTo(0, 0);
   let modal=$('#taskMaterialsModal');
