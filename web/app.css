@@ -1063,6 +1063,9 @@ label {
 .mission-rating button + button { margin-left: -1px; }
 .mission-rating button:hover { transform: none; }
 .mission-rating button.selected { position: relative; z-index: 1; color: var(--mc-on-primary); border-color: var(--mc-primary); background: var(--mc-primary); }
+.mission-rating-action { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 10px; }
+.mission-rating-action .mission-rating { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+.mission-rating-action footer { flex: 0 0 auto; margin-top: 0; }
 
 .mission-upload {
   position: relative;
@@ -1911,8 +1914,18 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   .actions { display: none; }
 
   .dash-top, .dash-bottom, .grid { grid-template-columns: 1fr; }
-  .companion { grid-template-columns: 1fr; }
-  .companion-stage { min-height: 0; padding-top: 36px; }
+  #dashboard.page.active { grid-template-rows: max-content; overflow-y: auto; }
+  .dash-top { height: auto; min-height: max-content; align-self: start; }
+  .companion {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    height: auto;
+    min-height: 0;
+    flex: none;
+    overflow: visible;
+    align-self: start;
+  }
+  .companion-stage { height: auto; min-height: 320px; padding-top: 36px; }
   .companion-pet { max-height: 280px; }
   .companion-mission { grid-template-columns: 56px minmax(0, 1fr); }
   .ring { margin: 0; }
@@ -1930,6 +1943,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 @media (max-width: 700px) {
   .mission-card { padding: 14px 16px; }
   .mission-rating { grid-template-columns: 1fr; }
+  .mission-rating-action { display: grid; gap: 8px; }
+  .mission-rating-action footer { justify-content: stretch; }
+  .mission-rating-action footer button { flex: 1 1 auto; }
   .mission-upload small { display: none; }
   .task { grid-template-columns: 24px minmax(0, 1fr) auto; padding: 10px 12px; }
   .feedback-ledger { min-height: 0; }
@@ -1977,8 +1993,17 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
       "mission"
       "tasks"
       "motivation";
-    grid-template-rows: auto;
+    grid-template-rows: max-content;
     overflow-y: auto;
+  }
+  #dashboard.page.active:has(#currentTaskBar) {
+    grid-template-rows: max-content;
+    overflow-y: auto;
+  }
+  #dashboard.page.active:has(#currentTaskBar) #currentTaskBar,
+  #dashboard.page.active:has(#currentTaskBar) .mission-card {
+    height: auto;
+    overflow: visible;
   }
   .dash-tasks { min-height: 280px; }
   .task-list { flex: none; max-height: 280px; }
@@ -2002,7 +2027,7 @@ button.recovery-task { margin-top: var(--sp-2); }
   #dashboard.page.active:has(#currentTaskBar) {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
-    grid-template-rows: minmax(300px, 1.1fr) minmax(240px, 0.9fr);
+    grid-template-rows: max-content max-content;
     grid-template-areas:
       "mission companion"
       "queue companion";
@@ -2025,6 +2050,8 @@ button.recovery-task { margin-top: var(--sp-2); }
     border-radius: var(--r-lg);
     background: var(--mc-panel);
     box-shadow: var(--shadow-sm);
+    overflow-y: auto;
+    overflow-x: hidden;
   }
   #dashboard.page.active .companion-stage {
     order: 0;
@@ -2090,6 +2117,7 @@ button.recovery-task { margin-top: var(--sp-2); }
   #dashboard.page.active .mission-title h2 { font-size: clamp(24px, 2.4vw, 34px); }
   #dashboard.page.active .mission-title { margin: 0 0 4px; }
   #dashboard.page.active .mission-card footer { margin-top: 20px; }
+  #dashboard.page.active .mission-rating-action footer { margin-top: 0; }
   #dashboard.page.active .mission-card footer .primary { min-width: 180px; }
   #dashboard.page.active .mission-evidence-action { display: flex; align-items: center; gap: 18px; }
   #dashboard.page.active .mission-evidence { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; }
@@ -2108,6 +2136,7 @@ button.recovery-task { margin-top: var(--sp-2); }
   #dashboard.page.active .dash-tasks {
     min-height: 0;
     height: auto;
+    margin-top: 12px;
     padding: 18px 22px;
   }
   #dashboard.page.active .dash-tasks .panel-head { margin-bottom: 8px; }
