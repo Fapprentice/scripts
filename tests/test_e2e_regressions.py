@@ -103,21 +103,45 @@ def test_needs_review_does_not_grow_companion(page):
         os.unlink(evidence_path)
 
 
+def test_manual_acceptance_is_available_in_the_browser(page):
+    seeded = post(page, '/api/tasks', {'tasks': [{'title': '浏览器人工复核任务', 'expected_output': '可核验交付物', 'acceptance': '必须包含交付物', 'verification_mode': 'evidence'}], 'reason': 'manual acceptance browser regression'})
+    assert seeded['status'] == 200, seeded
+    target = len(state(page)['tasks']) - 1
+    page.evaluate("async (idx) => TaskVergeApi.api('task-state', {idx, status: 'doing'})", target)
+    page.reload()
+    page.wait_for_load_state('domcontentloaded')
+    page.evaluate("async (idx) => TaskVergeApi.api('evaluate-task', {idx})", target)
+    page.wait_for_function("async (idx) => ['failed','needs_review','blocked'].includes((await TaskVergeApi.api('state')).tasks?.[idx]?.acceptance_result?.status)", arg=target, timeout=10000)
+    page.reload()
+    page.wait_for_load_state('domcontentloaded')
+    manual = page.locator(f'#taskList [data-task-index="{target}"] [data-manual-accept]')
+    manual.wait_for(state='visible', timeout=10000)
+    manual.click()
+    page.locator('#textPrompt').wait_for(state='visible', timeout=10000)
+    page.locator('#textPrompt .modal-input').fill('人工检查了当前交付物，确认可以通过')
+    page.locator('#textPrompt [data-ok]').click()
+    page.wait_for_function("async (idx) => (await TaskVergeApi.api('state')).tasks?.[idx]?.status === 'done'", arg=target, timeout=10000)
+    assert page.evaluate("async (idx) => (await TaskVergeApi.api('state')).tasks[idx].acceptance_result.overridden === true", target)
+
 def test_poll_does_not_replace_task_card(page):
     """The live poll must preserve a task card and its file input DOM node."""
-    card = page.locator('#taskList [data-task-index="0"]').first
-    file_input = page.locator('#taskList [data-evidence-file="0"]').first
+    configured = post(page, '/api/settings', {'goals': [{'id': 'e2e-poll-dom', 'title': '轮询 DOM 目标'}], 'active_goal': 0, 'goal_details': {'outcome': '轮询交付', 'success_criteria': ['文件存在'], 'constraints': []}})
+    assert configured['status'] == 200, configured
+    seeded = post(page, '/api/tasks', {'tasks': [{'title': '轮询 DOM 稳定性任务', 'expected_output': '文件', 'acceptance': '文件存在', 'verification_mode': 'evidence'}], 'reason': 'poll DOM regression'})
+    assert seeded['status'] == 200, seeded
+    target = len(state(page)['tasks']) - 1
+    page.reload()
+    page.wait_for_load_state('domcontentloaded')
+    card = page.locator(f'#taskList [data-task-index="{target}"]').first
+    file_input = page.locator(f'#taskList [data-evidence-file="{target}"]').first
     assert card.count() and file_input.count(), "fixture task card is not editable"
-    page.evaluate("""() => {
-      window.__e2eCard = document.querySelector('#taskList [data-task-index="0"]');
-      window.__e2eFileInput = document.querySelector('#taskList [data-evidence-file="0"]');
-    }""")
-    page.locator('#taskList [data-evidence-file="0"]').set_input_files(__file__)
+    page.evaluate("(idx) => { window.__e2eCard = document.querySelector('[data-task-index=\\\"' + idx + '\\\"]'); window.__e2eFileInput = document.querySelector('[data-evidence-file=\\\"' + idx + '\\\"]'); }", target)
+    page.locator(f'#taskList [data-evidence-file="{target}"]').set_input_files(__file__)
     page.wait_for_timeout(3500)
     assert card.evaluate("el => el.isConnected")
     assert file_input.evaluate("el => el.isConnected")
-    assert page.evaluate("""() => window.__e2eCard === document.querySelector('#taskList [data-task-index="0"]')""")
-    assert page.evaluate("""() => window.__e2eFileInput === document.querySelector('#taskList [data-evidence-file="0"]')""")
+    assert page.evaluate("(idx) => document.querySelectorAll('[data-task-index]')[idx] === window.__e2eCard", target)
+    assert page.evaluate("(idx) => document.querySelectorAll('[data-evidence-file]')[idx] === window.__e2eFileInput", target)
 
 
 def test_goal_rename_preserves_identity(page):

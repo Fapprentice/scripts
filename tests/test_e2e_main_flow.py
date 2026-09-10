@@ -88,7 +88,7 @@ class TestE2EMainFlow:
         page.fill('#goalOutcome', '完成一个可运行的 Python 基础练习集')
         page.fill('#goalDeadline', '2026-12-31')
         page.fill('#goalBaseline', '已掌握变量和基本语法')
-        page.fill('#goalCriteria', '至少包含列表和字典练习\n脚本可直接运行')
+        page.fill('#goalCriteria', '程序可运行\n调试')
         page.fill('#goalConstraints', '每天最多 60 分钟')
         page.click('#saveGoalDetails')
         page.wait_for_timeout(500)

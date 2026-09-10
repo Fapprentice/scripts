@@ -1024,7 +1024,12 @@ function renderReview(){
   const fmt = (label, x) => `<div class="log-item"><b>${escapeHtml(label)}</b><span>${escapeHtml(x.ts||x.date||'')}</span><p>${escapeHtml(eventMessage(x))}</p></div>`;
   $('#quitList').innerHTML=(state.quit_attempts||[]).slice().reverse().map(x=>fmt('退出申请', x)).join('') || '<p class="hint">暂无退出记录。</p>';
   $('#eventList').innerHTML=(state.events||[]).slice().reverse().map(x=>fmt(eventName(x.kind), x)).join('') || '<p class="hint">暂无事件。</p>';
-  $('#archiveList').innerHTML=(state.archives||[]).slice().reverse().map(a=>`<div class="log-item"><div><b>${escapeHtml(a.date)}</b><button data-remove-archive="${escapeHtml(a.date)}" title="删除这条归档">删除</button></div><p>${escapeHtml(a.goal||'')} · 完成 ${doneCount(a)}/${(a.tasks||[]).length} · ${a.completion_pct||0}%</p></div>`).join('') || '<p class="hint">暂无归档。</p>';
+    $('#archiveList').innerHTML=(state.archives||[]).slice().reverse().map(a=>`<div class="log-item"><div><b>${escapeHtml(a.date)}</b><button data-remove-archive="${escapeHtml(a.cycle_id||a.date)}" data-remove-archive-cycle="${a.cycle_id?'1':'0'}" title="删除这条归档">删除</button></div><p>${escapeHtml(a.goal||'')} · 完成 ${doneCount(a)}/${(a.tasks||[]).length} · ${a.completion_pct||0}%</p></div>`).join('') || '<p class="hint">暂无归档。</p>';
+  $('#archiveList').querySelectorAll('[data-remove-archive]').forEach((button, index)=>{
+    const archive=(state.archives||[]).slice().reverse()[index]||{};
+    button.dataset.removeArchiveDate=archive.date||'';
+    button.dataset.removeArchiveGoal=archive.goal_id||'';
+  });
   renderActivityHeatmap();
 }
 function renderActivityHeatmap(){
@@ -1104,8 +1109,9 @@ function taskCard(t,i){
   const agentUi=agentRun ? `<div class="agent-run"><b>Agent：${escapeHtml(agentRun.status)}</b><span>步骤 ${agentRun.step}/${agentRun.max_steps}</span>${agentRun.status==='awaiting_confirmation'?`<button data-agent="confirm" data-run-id="${escapeHtml(agentRun.run_id)}">确认继续</button>`:''}${['paused','failed','blocked'].includes(agentRun.status)?`<button data-agent="resume" data-run-id="${escapeHtml(agentRun.run_id)}">继续</button>`:''}${!['completed','failed','blocked','paused','awaiting_confirmation'].includes(agentRun.status)?`<button data-agent="stop" data-run-id="${escapeHtml(agentRun.run_id)}">暂停</button>`:''}</div>` : '';
   const ar = t.acceptance_result || {};
   const decisionLabel={passed:'通过',failed:'未通过',needs_review:'待人工复核',blocked:'受阻',accepted:'通过',conditional:'有条件通过',review:'待人工复核',rejected:'驳回'}[ar.status||ar.decision]||'验收结果';
-  const acceptanceChecks=Array.isArray(ar.checks)?ar.checks:[];
-  const nextActions=ar.next_actions||ar.next_steps||[];
+      const acceptanceChecks=Array.isArray(ar.checks)?ar.checks:[];
+      const manualReviewAction=(ar.status==='needs_review'||ar.status==='blocked'||ar.status==='failed')&&!t.done ? `<div class='manual-review-hint'>人工复核只记录你的确认，不执行宿主机或沙箱代码。<button data-manual-accept='${i}'>人工确认并填写理由</button></div>` : '';
+      const nextActions=ar.next_actions||ar.next_steps||[];
   const ancestry=[state.goal,t.milestone||'今日执行',t.text||t.title].filter(Boolean);
   // evidence is now a list; join names for display
   const evList = Array.isArray(t.evidence) ? t.evidence.filter(Boolean) : (t.evidence ? [t.evidence] : []);
@@ -1118,6 +1124,7 @@ function taskCard(t,i){
       <div class="goal-ancestry">${ancestry.map(escapeHtml).join('<i>→</i>')}</div>
       <div class="task-meta"><b data-task-status>${stateLabel}</b> · ${escapeHtml(meta)}${taskKindLabel ? ` · ${escapeHtml(taskKindLabel)}` : ''}${t.milestone ? ` · 阶段 ${escapeHtml(t.milestone)}` : ''}</div>
       ${learningMeta}
+      ${manualReviewAction}
       ${t.skill_id && ((state.user_model?.skills||{})[t.skill_id]?.demonstration||t.demonstration||'recall')==='recall' ? `<div class="recall-rating" aria-label="回忆质量">
         <small>回忆质量：</small>
         ${[['again','忘记'],['hard','困难'],['good','正常'],['easy','轻松']].map(([value,label])=>`<button class="${t.recall_rating===value?'selected':''}" data-recall-rating="${value}" data-rating-idx="${i}">${label}</button>`).join('')}
@@ -1203,6 +1210,7 @@ async function uploadEvidenceFile(idx, input, refresh=true){
 }
 async function uploadCriterionEvidenceFile(idx,input){
   const criterionId=input?.dataset?.criterionId;
+  if(input) input.dataset.uploadComplete='0';
   const uploaded=await uploadEvidenceFile(idx,input,false);
   if(!criterionId||!uploaded.length) return;
   state=normalizeState(await api('state'));
@@ -1216,6 +1224,7 @@ async function uploadCriterionEvidenceFile(idx,input){
     if(rows.length) criterionEvidence[id]=rows;
   });
   await api('task-response',{idx,response:{criterion_evidence:criterionEvidence}});
+  if(input) input.dataset.uploadComplete='1';
   state=normalizeState(await api('state'));
   const label=document.querySelector(`[data-criterion-attachments="${idx}"][data-criterion-id="${criterionId}"]`);
   const refs=criterionEvidenceRows(state.tasks[idx]||{},criterionId).filter(row=>row.kind==='attachment'||row.kind==='legacy_attachment').map(row=>row.ref).filter(Boolean);
@@ -1612,8 +1621,16 @@ document.addEventListener('click', async e=>{
   if(e.target.closest?.('[data-close-task-details]') || e.target.id==='taskDetailsModal'){
     setModalOpen($('#taskDetailsModal'),false); return;
   }
-  const recover=e.target.closest?.('[data-create-recovery]');
-  if(recover){
+      const recover=e.target.closest?.('[data-create-recovery]');
+  const manual=e.target.closest?.('[data-manual-accept]');
+  if(manual){
+    const reason=await promptDlg('人工复核理由（必填）');
+    if(!reason?.trim()) return;
+    try{ await api('manual-accept',{task_idx:+manual.dataset.manualAccept,reason}); toast('人工复核已记录'); await load(); }
+    catch(err){ toast('人工复核未通过：'+err.message,false); }
+    return;
+  }
+      if(recover){
     try{ await api('remediate-task',{idx:+recover.dataset.createRecovery}); toast('已创建补救任务'); await load(); }
     catch(err){ toast(err.message||'无法创建补救任务', false); }
     return;
@@ -1710,9 +1727,9 @@ document.addEventListener('click', async e=>{
     await api('lock-plan',{locked:!state.plan_locked,reason}); toast(state.plan_locked?'已解锁':'已锁定'); await load(); return;
   }
   if(e.target.dataset.removeArchive!==undefined){
-    const date=e.target.dataset.removeArchive;
-    if(!confirmDlg(`确定删除 ${date} 的归档吗？此操作不可恢复。`)) return;
-    await api('archive-delete',{date}); toast('归档已删除'); await load(); return;
+      const target=e.target.dataset.removeArchive, byCycle=e.target.dataset.removeArchiveCycle==='1';
+      if(!confirmDlg(`确定删除 ${target} 的归档吗？此操作不可恢复。`)) return;
+      await api('archive-delete',byCycle?{cycle_id:target}:{date:target}); toast('归档已删除'); await load(); return;
   }
   const archive = e.target.closest('[data-archive]');
   if(archive){

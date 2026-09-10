@@ -98,7 +98,7 @@ def test_saved_state_keeps_remediation_after_reload():
 def test_learning_task_requires_recall_rating():
     service, _ = _service()
     state = {"tasks": [{"status": "pending", "skill_id": "loops"}], "done_flags": [False]}
-    ok, message = service.manual_accept(state, 0)
+    ok, message = service.manual_accept(state, 0, "人工确认已完成交付")
     assert ok is False
     assert "recall quality" in message
 
@@ -153,5 +153,5 @@ def test_deliverable_skill_does_not_require_recall_rating():
     state = {"tasks": [{"status": "pending", "skill_id": "python.app.script", "evidence": ["app.py"]}],
              "done_flags": [False],
              "user_model": {"skills": {"python.app.script": {"demonstration": "deliverable"}}}}
-    ok, message = service.manual_accept(state, 0)
+    ok, message = service.manual_accept(state, 0, "人工确认交付文件存在且已检查")
     assert ok is True

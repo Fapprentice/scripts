@@ -1,6 +1,7 @@
 """Browser regression for edits made while criterion evidence save is pending."""
 
 import os
+import json
 import tempfile
 import threading
 
@@ -60,6 +61,7 @@ def test_save_pending_keeps_new_drafts_and_recovers_after_failure():
               const s = await TaskVergeApi.api('state');
               return (s.tasks?.[0]?.criterion_evidence?.['{criteria[0]}'] || []).some(row => row.kind === 'attachment' && row.ref);
             }}""", timeout=10000)
+            page.wait_for_function("""() => document.querySelector('[data-criterion-evidence-file="0"]')?.dataset.uploadComplete === '1'""", timeout=10000)
         finally:
             os.unlink(evidence_path)
 
@@ -72,6 +74,12 @@ def test_save_pending_keeps_new_drafts_and_recovers_after_failure():
         pending_save = []
 
         def hold_save(route):
+            payload = json.loads(route.request.post_data or "{}")
+            evidence = payload.get("response", {}).get("criterion_evidence", {})
+            text = json.dumps(evidence, ensure_ascii=False)
+            if "保存快照A" not in text or "保存快照B" not in text:
+                route.continue_()
+                return
             save_seen.set()
             pending_save.append(route)
 

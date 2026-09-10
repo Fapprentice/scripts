@@ -4,15 +4,18 @@ from acceptance import build_remediation_task, explainable_result
 
 
 class AcceptanceService:
-    def __init__(self, *, normalize, text, sync_pct, save, event, outcome=None, learning_outcome=None, companion=None):
+    def __init__(self, *, normalize, text, sync_pct, save, event, outcome=None, learning_outcome=None, companion=None, manual_review=None):
         self.normalize, self.text = normalize, text
         self.sync_pct, self.save, self.event, self.outcome, self.learning_outcome = sync_pct, save, event, outcome, learning_outcome
-        self.companion = companion
+        self.companion, self.manual_review = companion, manual_review
 
     def persist_result(self, state, idx, result):
         tasks = self.normalize(state.get("tasks", []), state.get("active_goal_id", ""), state.get("done_flags", []))
         if idx < 0 or idx >= len(tasks): return False, "task index out of range"
+        bindings = {key: result.get(key) for key in ("contract_fingerprint", "task_fingerprint")
+                    if isinstance(result, dict) and result.get(key)}
         result = explainable_result(result)
+        result.update(bindings)
         from learning import task_is_unlocked
         if result.get("status") == "passed" and tasks[idx].get("skill_id") and not task_is_unlocked(state, tasks[idx]):
             result = explainable_result({"pass": False, "status": "failed",
@@ -23,7 +26,7 @@ class AcceptanceService:
         while len(flags) <= idx: flags.append(False)
         passed = result["status"] == "passed"
         flags[idx] = passed
-        tasks[idx]["status"] = "done" if passed else tasks[idx].get("status") or "pending"
+        tasks[idx]["status"] = "done" if passed else ("pending" if tasks[idx].get("status") == "done" else tasks[idx].get("status") or "pending")
         state["tasks"], state["done_flags"] = tasks, flags
         task_kind = str(tasks[idx].get("task_kind") or "").strip()
         if result["status"] == "failed":
@@ -91,7 +94,14 @@ class AcceptanceService:
         from learning import requires_recall_rating
         if requires_recall_rating(tasks[idx], state) and not tasks[idx].get("recall_rating"):
             return False, "select recall quality before accepting a learning task"
-        reason = self.text(reason) or "manual approval"
+        reason = self.text(reason).strip()
+        if not reason or reason == "manual approval":
+            return False, "manual acceptance requires an explicit reason"
+        task_kind = str(tasks[idx].get("task_kind") or "").strip()
+        if task_kind in ("stage", "outcome") and self.manual_review:
+            return self.manual_review(state, idx, reason)
+        if task_kind in ("stage", "outcome") and not (tasks[idx].get("eligibility") or {}).get("eligible"):
+            return False, "当前阶段或最终成果尚未满足资格门槛，不能人工绕过"
         result = explainable_result({"pass": True, "status": "passed", "reason": "manual approval: " + reason,
             "missing": [], "next_steps": [], "evidence_refs": [], "overridden": True,
             "override_reason": reason, "override_ts": datetime.now().isoformat(),

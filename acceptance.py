@@ -123,12 +123,7 @@ def _r5_output_keywords(task, details):
     evidence_lower = evidence_text.lower()
     matched = [kw for kw in keywords if kw.lower() in evidence_lower]
 
-    if len(matched) >= len(keywords) * 0.5:
-        return RuleResult(True, f"关键词匹配: {len(matched)}/{len(keywords)}")
-    elif len(matched) > 0:
-        return RuleResult(False, f"部分关键词匹配 ({len(matched)}/{len(keywords)})，需 LLM 确认")
-    else:
-        return RuleResult(False, "无关键词匹配，需 LLM 语义判断")
+    return RuleResult(False, f"关键词仅作线索 ({len(matched)}/{len(keywords)})，需语义判定")
 
 
 def _r6_acceptance_criteria(task, details):
@@ -152,9 +147,7 @@ def _r6_acceptance_criteria(task, details):
     evidence_lower = evidence_text.lower()
     matched = [kw for kw in keywords if kw.lower() in evidence_lower]
 
-    if len(matched) >= len(keywords) * 0.4:
-        return RuleResult(True, f"验收关键词匹配: {len(matched)}/{len(keywords)}")
-    return RuleResult(False, "验收标准需 LLM 判断")
+    return RuleResult(False, f"验收关键词仅作线索 ({len(matched)}/{len(keywords)})，需语义判定")
 
 
 # Ordered list of (rule_id, rule_fn, is_hard)
@@ -276,10 +269,23 @@ def run_llm_eval(task, details, fg_top, deepseek_fn):
             {"role": "user", "content": prompt},
         ], 1800, 0.1, 35, 0)
 
-        if not isinstance(result, dict):
-            result = {}
+        if not isinstance(result, dict) or not isinstance(result.get("pass"), bool):
+            return {"pass": False, "status": "needs_review", "needs_llm": True,
+                    "reason": "LLM 返回缺少合法布尔判定，需要人工复核", "missing": [],
+                    "next_steps": ["人工复核"], "evidence_refs": []}
+        try:
+            uncertainty = float(result.get("uncertainty", 0) or 0)
+        except (TypeError, ValueError):
+            uncertainty = 1
+        if uncertainty > 0.25:
+            return {"pass": False, "status": "needs_review", "needs_llm": True,
+                    "reason": str(result.get("reason") or "语义判定不确定，需要人工复核"),
+                    "missing": result.get("missing", []) if isinstance(result.get("missing"), list) else [],
+                    "next_steps": ["人工复核"], "evidence_refs": []}
         return {
-            "pass": bool(result.get("pass", False)),
+            "pass": result["pass"],
+            "status": "passed" if result["pass"] else "failed",
+            "needs_llm": False,
             "reason": str(result.get("reason", "LLM 未返回判定")),
             "missing": result.get("missing", []) if isinstance(result.get("missing"), list) else [],
             "next_steps": result.get("next_steps", []) if isinstance(result.get("next_steps"), list) else [],

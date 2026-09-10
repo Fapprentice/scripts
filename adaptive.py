@@ -8,7 +8,7 @@ from datetime import datetime
 from learning import (SkillMap, ability_profile, diagnostic_dimensions, due_review_task, fallback_task_templates as learning_fallback_templates, initial_diagnostic_tasks, is_generic_planning_task, is_learning_goal, knowledge_graph, learning_focus, match_pack, merge_knowledge_graph, next_learning_task,
                       normalize_diagnostic_dimensions, plan_learning_tasks, propose_nodes, requires_recall_rating, set_diagnostic_dimensions,
                       task_consistency_issues, task_in_map, task_semantic_key,
-                      record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials, get_stage_template, validate_stage_template, validate_stage_proposal, instantiate_stage_task, evaluate_stage_outcome, stage_proposals, stage_candidate_pool, record_stage_outcome, migrate_legacy_tasks, criterion_records, outcome_eligibility, outcome_task, evaluate_outcome)
+                      record_learning_outcome, sync_task_graph, task_is_unlocked, ensure_task_materials, get_stage_template, validate_stage_template, validate_stage_proposal, instantiate_stage_task, stage_eligibility, stage_task_fingerprint, evaluate_stage_outcome, stage_proposals, stage_candidate_pool, record_stage_outcome, migrate_legacy_tasks, criterion_records, outcome_eligibility, outcome_task, evaluate_outcome)
 from utils import task_actual_minutes
 
 
@@ -183,7 +183,17 @@ def apply_decision(state, decision):
         first["estimated_minutes"] = max(10, min(30, int(task.get("estimated_minutes", 30) or 30) // 2))
         first["expected_output"] = "一个可检查的中间成果"
         first["acceptance"] = "已提交中间成果，并明确记录下一步或阻塞点"
-        first["status"] = "pending"; first["evidence"] = []; first["acceptance_result"] = {}
+        first["task_kind"] = "legacy"
+        first["skill_id"] = first["primary_skill_id"] = ""
+        first["supporting_skill_ids"] = []
+        first["is_intermediate"] = True
+        first["evidence_target"] = "task"
+        first["mastery_evidence"] = {}
+        if task.get("status") == "doing":
+            record_task_outcome(task, False)
+        for field in ("response", "evidence", "criterion_evidence", "acceptance_result", "started_at", "ended_at", "completed_at"):
+            first.pop(field, None)
+        first["actual_seconds"] = 0; first["attempts"] = 0; first["status"] = "pending"
         first["source"] = "adaptive"
         task["status"] = "pending"
         task["depends_on"] = list(dict.fromkeys([first["id"]] + list(task.get("depends_on", []))))
@@ -255,10 +265,9 @@ def passive_review(state, now=None):
         except (TypeError, ValueError):
             continue
         estimate = max(5, int(task.get("estimated_minutes", 30) or 30))
-        elapsed = int((now - started) / 60)
+        elapsed = int((float(task.get("actual_seconds", 0) or 0) + max(0, now - started)) / 60)
         signal = "overrun:{}:{}".format(task.get("id", index), estimate)
         if elapsed >= estimate * 1.5 and signal not in seen:
-            task["actual_seconds"] = elapsed * 60
             decision = record_feedback(state, index, "实际耗时明显超过预计", "too_hard", "system")
             seen.append(signal); state["adaptive_signals"] = seen[-100:]
             return decision
@@ -332,4 +341,5 @@ def prepare_next_cycle(state):
     state["completion_pct"] = 0
     state["plan_locked"] = False
     state.setdefault("next_cycle_context", {})["started_at"] = datetime.now().isoformat()
+    state["cycle_id"] = "cycle_{}".format(int(time.time() * 1000))
     return unfinished

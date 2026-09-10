@@ -34,6 +34,7 @@ class ServiceContext:
     feedback_record: object
     done: object
     learning_outcome: object
+    manual_review: object = None
 
 
 @dataclass
@@ -70,6 +71,7 @@ def build_services(store, context):
         normalize=context.normalize, text=context.text, sync_pct=context.sync_pct,
         save=context.save, event=context.event, outcome=context.outcome,
         learning_outcome=context.learning_outcome,
+        manual_review=getattr(context, "manual_review", None),
         companion=lambda state, idx, result: companion.on_acceptance(
             state, idx, result, commit=False),
     )

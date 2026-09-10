@@ -127,12 +127,13 @@ class TestAcceptanceRules(unittest.TestCase):
         result = acceptance._r5_output_keywords(self.task, self.empty_details)
         self.assertTrue(result.pass_)
 
-    def test_r5_passes_keyword_match(self):
-        """Evidence containing keywords from expected output passes."""
+    def test_r5_keyword_match_is_only_a_semantic_clue(self):
+        """Evidence containing keywords must still be semantically judged."""
         self.task["expected_output"] = "一个Python文件 list_exercises.py"
         details = {"text": "我创建了 list_exercises.py 文件", "files": []}
         result = acceptance._r5_output_keywords(self.task, details)
-        self.assertTrue(result.pass_)
+        self.assertFalse(result.pass_)
+        self.assertIn("语义判定", result.detail)
 
     # ---- Full check_evidence pipeline ----
 

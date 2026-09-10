@@ -118,9 +118,10 @@ _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_BACKUP_BYTES = 512 * 1024 * 1024
 CFG0 = {"goal":"","goals":[],"archived_goals":[],"active_goal":0,"state_revision":0,"blocklist":[],"blocklists_by_goal":{},"task_apps":[],"manual_task_apps":[],"ai_task_apps":[],"task_app_categories":[],"tasks":[],"done_flags":[],"completion_pct":0,
     "tasks_by_goal":{},"flags_by_goal":{},"pct_by_goal":{},"apps_by_goal":{},"manual_apps_by_goal":{},"ai_apps_by_goal":{},"app_cats_by_goal":{},
+    "goal_completed_by_goal":{},"goal_completed_at_by_goal":{},"contract_fingerprint_by_goal":{},"manual_reviews_by_goal":{},"task_history_by_goal":{},
     "locks_by_goal":{},"time_blocks_by_goal":{},"generation_by_goal":{},"acceptance_by_goal":{},
     "feedback_by_goal":{},"user_models_by_goal":{},"adaptive_signals_by_goal":{},
-    "reviews_by_goal":{},"next_cycles_by_goal":{},"plan_locked":False,
+    "reviews_by_goal":{},"next_cycles_by_goal":{},"cycle_ids_by_goal":{},"plan_locked":False,
     "schedule":{"enabled":False,"start":"09:00","end":"18:00","focus_template":"90"},"time_blocks":[],"task_generation":{},"last_acceptance":{},"coach_context":{"adjustments_today":0,"ignored_insights":[]},"coach_messages":[],
     "breaks":[],"events":[],"quit_attempts":[],"archives":[],
     "feedback_history":[],"user_model":{},"motivation":{"points":0,"streak":0,"best_streak":0,"history":[]},"adaptive_signals":[],"last_review":{},"next_cycle_context":{},
@@ -216,6 +217,18 @@ def sc(c):
         js(P["cfg"], c, companion_mutator=mutator)
         if COMPANION: COMPANION.clear_pending()
 
+def clear_imported_manual_reviews():
+    """Imported backups must require fresh local confirmation."""
+    c = jl(P["cfg"], copy.deepcopy(CFG0))
+    c["manual_reviews"] = {}
+    c["manual_reviews_by_goal"] = {}
+    for tasks in (c.get("tasks_by_goal", {}) or {}).values():
+        for task in tasks if isinstance(tasks, list) else []:
+            if isinstance(task, dict): task.pop("manual_review", None)
+    for task in c.get("tasks", []) if isinstance(c.get("tasks"), list) else []:
+        if isinstance(task, dict): task.pop("manual_review", None)
+    js(P["cfg"], c)
+
 # ---- Compatibility/state helpers retained during the module split ----
 # These helpers are deliberately small: SQLite is the source of truth and
 # callers decide when to persist through sc(). JSON documents are compatibility snapshots.
@@ -254,6 +267,46 @@ def goal_details(c):
     return {"outcome":task_text(g.get("outcome")),"deadline":task_text(g.get("deadline")),
             "baseline":task_text(g.get("baseline")),"success_criteria":as_list(g.get("success_criteria")),
             "constraints":as_list(g.get("constraints"))}
+
+def contract_fingerprint(details):
+    details = details if isinstance(details, dict) else {}
+    payload = {"outcome": task_text(details.get("outcome")),
+               "success_criteria": as_list(details.get("success_criteria", []))}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+def manual_task_fingerprint(task):
+    task = task if isinstance(task, dict) else {}
+    payload = {key: task.get(key) for key in (
+        "id", "task_kind", "title", "description", "type", "contract_fingerprint",
+        "criteria", "criterion_ids", "criterion_evidence", "required_stage_ids",
+        "required_skill_ids", "stage_id", "template_revision", "pack_id", "pack_version",
+        "integration_behavior", "outcome_shape", "skill_checks", "materials",
+        "expected_output", "acceptance", "evidence", "response")}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+def manual_review_state(c, task):
+    task_id = task_text(task.get("id")) if isinstance(task, dict) else ""
+    reviews = (c.get("manual_reviews_by_goal", {}) or {}).get(gid(c), {})
+    review = reviews.get(task_id) if isinstance(reviews, dict) else None
+    if not isinstance(review, dict): return None, False, ""
+    if (review.get("task_id") != task_id or not task_text(review.get("reason")) or
+            review.get("authority") != "user"):
+        return review, False, "人工复核记录无效，请重新复核"
+    current_fp = contract_fingerprint(goal_details(c))
+    if (review.get("contract_fingerprint") != current_fp or
+            (task.get("task_kind") == "outcome" and task.get("contract_fingerprint") != current_fp)):
+        return review, False, "人工复核绑定了过期的目标契约，请重新复核"
+    if review.get("task_fingerprint") != manual_task_fingerprint(task):
+        return review, False, "人工复核绑定的任务或证据已变化，请重新复核"
+    if task.get("task_kind") == "outcome":
+        eligibility = adaptive.outcome_eligibility(c, goal_details(c), task.get("required_stage_ids") or [])
+    elif task.get("task_kind") == "stage":
+        eligibility = adaptive.stage_eligibility(c, task)
+    else:
+        eligibility = {"eligible": True}
+    if not eligibility.get("eligible"):
+        return review, False, "当前资格门槛未满足，人工复核不能绕过"
+    return review, True, ""
 
 def record_product_event(c, name):
     """Record privacy-safe funnel counts without storing raw user content."""
@@ -296,6 +349,8 @@ def ensure_goal_state(c):
             ("feedback_history", "feedback_by_goal", []), ("user_model", "user_models_by_goal", {}),
             ("adaptive_signals", "adaptive_signals_by_goal", []),
             ("last_review", "reviews_by_goal", {}), ("next_cycle_context", "next_cycles_by_goal", {}),
+            ("cycle_id", "cycle_ids_by_goal", ""), ("manual_reviews", "manual_reviews_by_goal", {}),
+            ("task_history", "task_history_by_goal", []),
         ):
             c[name] = copy.deepcopy((c.get(map_name, {}) or {}).get(stored_key, default))
         c["plan_locked"] = bool((c.get("locks_by_goal", {}) or {}).get(stored_key, False))
@@ -309,10 +364,73 @@ def ensure_goal_state(c):
         c["task_generation"] = {}; c["last_acceptance"] = {}; c["plan_locked"] = False
         c["feedback_history"] = []; c["user_model"] = {}; c["adaptive_signals"] = []
         c["last_review"] = {}; c["next_cycle_context"] = {}
+        c["cycle_id"] = ""
         c["blocklist"] = []
+        c["goal_completed"] = False; c["goal_completed_at"] = ""
+    current_key = gid(c)
+    current_fp = contract_fingerprint(goal_details(c))
+    completed_map = c.get("goal_completed_by_goal", {}) or {}
+    stored_fp = (c.get("contract_fingerprint_by_goal", {}) or {}).get(current_key)
+    legacy_completed = c.get("goal_completed", False) if not (maps or flags_map) else False
+    c["goal_completed"] = bool(completed_map.get(current_key, legacy_completed)) if stored_fp in (None, current_fp) else False
+    c["goal_completed_at"] = (c.get("goal_completed_at_by_goal", {}) or {}).get(current_key, c.get("goal_completed_at", "")) if c["goal_completed"] else ""
+    c.setdefault("contract_fingerprint_by_goal", {})[current_key] = current_fp
     c["tasks"] = normalize_tasks(c.get("tasks", []), key, c.get("done_flags", []))
     adaptive.migrate_legacy_tasks(c)
-    for task in c["tasks"]: task["goal_id"] = key; adaptive.ensure_task_materials(task)
+    reviews = c.get("manual_reviews", {}) if isinstance(c.get("manual_reviews"), dict) else {}
+    for task in c["tasks"]:
+        task["goal_id"] = key; adaptive.ensure_task_materials(task)
+        task["manual_review"] = copy.deepcopy(reviews.get(task.get("id"), {})) if isinstance(reviews.get(task.get("id")), dict) else {}
+    outcome_tasks = [task for task in c["tasks"] if task.get("task_kind") == "outcome"]
+    if outcome_tasks:
+        current_fp = contract_fingerprint(goal_details(c))
+        valid_outcome = False
+        for index, task in enumerate(outcome_tasks):
+            result = task.get("acceptance_result") or {}
+            valid = (result.get("status") == "passed" and result.get("contract_fingerprint") == current_fp and
+                     result.get("task_fingerprint") == manual_task_fingerprint(task) and
+                     task.get("contract_fingerprint") == current_fp)
+            if valid:
+                valid_outcome = True
+                continue
+            task_index = c["tasks"].index(task)
+            flag = c.get("done_flags", [])
+            if task_done(task, flag[task_index] if task_index < len(flag) else False):
+                task["status"] = "pending"
+                while len(flag) <= task_index: flag.append(False)
+                flag[task_index] = False
+            if result.get("status") == "passed":
+                task["acceptance_result"] = _ACCEPTANCE_MOD.explainable_result({
+                    "status": "blocked", "reason": "当前成果结果绑定已失效，请重新验收"})
+        if not valid_outcome:
+            c["goal_completed"] = False; c["goal_completed_at"] = ""
+        else:
+            c["goal_completed"] = True
+    stage_tasks = [task for task in c["tasks"] if task.get("task_kind") == "stage"]
+    integration = (c.get("user_model", {}) or {}).get("integration_evidence", [])
+    if stage_tasks:
+        current_fp = contract_fingerprint(goal_details(c))
+        flags = c.setdefault("done_flags", [])
+        for task in stage_tasks:
+            result = task.get("acceptance_result") or {}
+            ledger = next((item for item in integration if isinstance(item, dict) and
+                           (item.get("task_id") == task.get("id") or item.get("stage_id") == task.get("stage_id"))), None)
+            valid = (result.get("status") == "passed" and result.get("contract_fingerprint") == current_fp and
+                     result.get("task_fingerprint") == manual_task_fingerprint(task) and
+                     isinstance(ledger, dict) and ledger.get("status") == "passed" and
+                     ledger.get("task_fingerprint") == adaptive.stage_task_fingerprint(task))
+            if valid: continue
+            task_index = c["tasks"].index(task)
+            if task_done(task, flags[task_index] if task_index < len(flags) else False):
+                task["status"] = "pending"
+                while len(flags) <= task_index: flags.append(False)
+                flags[task_index] = False
+            if result.get("status") == "passed":
+                task["acceptance_result"] = _ACCEPTANCE_MOD.explainable_result({
+                    "status": "blocked", "reason": "当前阶段结果绑定已失效，请重新验收"})
+            if isinstance(ledger, dict) and ledger.get("status") == "passed":
+                ledger["status"] = "blocked"
+                ledger["reason"] = "当前阶段结果绑定已失效，请重新验收"
     sync_pct(c)
     c["task_gen"] = gen_settings(c)
     return c
@@ -339,6 +457,13 @@ def save_goal_state(c):
     c["adaptive_signals_by_goal"][gid(c)] = list(c.get("adaptive_signals", []))
     c["reviews_by_goal"][gid(c)] = copy.deepcopy(c.get("last_review", {}))
     c["next_cycles_by_goal"][gid(c)] = copy.deepcopy(c.get("next_cycle_context", {}))
+    c["manual_reviews_by_goal"][gid(c)] = copy.deepcopy(c.get("manual_reviews", {}))
+    c["task_history_by_goal"][gid(c)] = copy.deepcopy(c.get("task_history", []))
+    c.setdefault("cycle_ids_by_goal", {})[gid(c)] = task_text(c.get("cycle_id"))
+    key = gid(c)
+    c.setdefault("goal_completed_by_goal", {})[key] = bool(c.get("goal_completed"))
+    c.setdefault("goal_completed_at_by_goal", {})[key] = c.get("goal_completed_at", "") if c.get("goal_completed") else ""
+    c.setdefault("contract_fingerprint_by_goal", {})[key] = contract_fingerprint(goal_details(c))
     return c
 
 def gen_settings(c):
@@ -465,11 +590,15 @@ def sf(d):
 def daily_archive(c):
     fg=dict(sorted(lf().items(),key=lambda x:-x[1])[:10])
     review=adaptive.complete_review(c,fg)
-    rec={"date":today(),"goal":c.get("goal",""),"goal_id":gid(c),
+    cycle_id = task_text(c.get("cycle_id")) or "{}:{}:1".format(gid(c), today())
+    c["cycle_id"] = cycle_id
+    rec={"cycle_id":cycle_id,"date":today(),"goal":c.get("goal",""),"goal_id":gid(c),
          "tasks":copy.deepcopy(c.get("tasks",[])),"done_flags":list(c.get("done_flags",[])),
          "completion_pct":c.get("completion_pct",0),"fg":fg,"review":review}
     c.setdefault("archives",[])
-    c["archives"]=[a for a in c["archives"] if a.get("date")!=today() or a.get("goal_id")!=gid(c)]+[rec]
+    c["archives"]=[a for a in c["archives"] if not (
+        a.get("cycle_id") == cycle_id and a.get("date") == rec["date"] and a.get("goal_id") == rec["goal_id"]
+    ) and not (not a.get("cycle_id") and a.get("date") == rec["date"] and a.get("goal_id") == rec["goal_id"])]+[rec]
     save_goal_state(c)
     return rec
 def ev(n):
@@ -554,14 +683,43 @@ def fallback_task_templates(goal, settings=None):
 
 def save_diagnostic_plan(c, tasks, mode="diagnostic"):
     goal_id=gid(c)
-    criterion_ids=[x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
-    completed=[t for t in normalize_tasks(c.get("tasks",[]),goal_id,c.get("done_flags",[])) if task_done(t)]
+    current_criteria = _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))
+    criterion_ids=[x["id"] for x in current_criteria]
+    current_fp = contract_fingerprint(goal_details(c))
+    existing=normalize_tasks(c.get("tasks",[]),goal_id,c.get("done_flags",[]))
+    current_text = {task_text(item.get("text")) for item in current_criteria}
+    history = list(c.get("task_history", []) or [])
+    kept_existing = []
+    for task in existing:
+        task_texts = {task_text(item.get("text")) for item in task.get("criteria") or [] if isinstance(item, dict)}
+        stale_outcome = task.get("task_kind") == "outcome" and (
+            task.get("contract_fingerprint") != current_fp or
+            (task_texts and task_texts != current_text))
+        if stale_outcome:
+            if not any(isinstance(item, dict) and item.get("id") == task.get("id") for item in history):
+                archived = copy.deepcopy(task); archived.pop("manual_review", None)
+                archived["superseded_at"] = datetime.now().isoformat(); archived["superseded_by"] = current_fp
+                history.append(archived)
+            continue
+        kept_existing.append(task)
+    c["task_history"] = history[-100:]
+    existing = kept_existing
+    completed=[t for t in existing if task_done(t)]
+    carried=[t for t in existing if not task_done(t)]
     fresh=[]
+    seen_titles={task_text(t).casefold() for t in existing if task_text(t)}
     for raw in tasks:
-        task=normalize_task(raw,goal_id,len(completed)+len(fresh),False)
-        if criterion_ids: task["criterion_ids"]=criterion_ids[:]
+        task=normalize_task(raw,goal_id,len(completed)+len(carried)+len(fresh),False)
+        if task_text(task).casefold() in seen_titles:
+            continue
+        if task.get("task_kind") == "outcome":
+            task["criteria"] = copy.deepcopy(current_criteria)
+            task["criterion_ids"] = criterion_ids[:]
+            task["contract_fingerprint"] = current_fp
+        elif criterion_ids: task["criterion_ids"]=criterion_ids[:]
         task["id"]=new_id("task"); task["status"]="pending"; fresh.append(task)
-    c["tasks"]=completed+fresh; c["done_flags"]=[True]*len(completed)+[False]*len(fresh)
+        seen_titles.add(task_text(task).casefold())
+    c["tasks"]=completed+carried+fresh; c["done_flags"]=[True]*len(completed)+[False]*(len(carried)+len(fresh))
     sync_pct(c); c["plan_locked"]=True
     profile=adaptive.ability_profile(c,c.get("goal",""))
     strategy={"skill_map":"按技能地图已解锁节点生成今日学习任务。",
@@ -613,6 +771,35 @@ def ensure_ability_dimensions(c):
     dimensions=adaptive.set_diagnostic_dimensions(c,dimensions,signature,source)
     save_goal_state(c); sc(c)
     return dimensions
+
+def repair_learning_map(c, details):
+    """Try one validated provider repair; a failed repair remains blocked."""
+    if not c.get("privacy",{}).get("cloud_ai_enabled", True) or not valid_deepseek_key(dk()):
+        return False
+    model = c.get("user_model", {}) or {}
+    try:
+        result = deepseek_json([
+            {"role":"system","content":"你是技能地图修复器。只返回 JSON。仅补充当前 Skill Pack 缺失的、可验证的节点；不得改写已有节点或边，不得降低验收。返回 knowledge_graph.nodes 和 coverage，coverage 是成功标准到节点 ID 的映射。每个新节点必须有 behavior、threshold、counterexample。"},
+            {"role":"user","content":json.dumps({"goal":c.get("goal",""),"contract":details,
+                "pack_id":model.get("pack_id",""),"pack_version":model.get("pack_version",""),
+                "gaps":model.get("coverage_gaps",[])},ensure_ascii=False)},
+        ], 1600, 0.1, 35, 1)
+        graph = result.get("knowledge_graph", result) if isinstance(result, dict) else {}
+        proposal = {"pack_id":model.get("pack_id",""),"pack_version":model.get("pack_version",""),
+                    "nodes":graph.get("nodes",[]) if isinstance(graph, dict) else []}
+        accepted = adaptive.propose_nodes(c, proposal)
+        if accepted.get("error"): return False
+        coverage = result.get("coverage", {}) if isinstance(result, dict) else {}
+        if isinstance(coverage, list): coverage = {row.get("criterion"): row.get("skill_ids",[]) for row in coverage if isinstance(row,dict)}
+        skills=(c.get("user_model",{}) or {}).get("skills",{})
+        gaps=(model.get("coverage_gaps",[]) or [])
+        valid={str(k).strip():[str(x).strip() for x in v if str(x).strip()] for k,v in coverage.items() if str(k).strip() and isinstance(v,list)}
+        if any(not valid.get(gap) or not all(skill_id in skills for skill_id in valid[gap]) for gap in gaps): return False
+        c.setdefault("user_model",{})["coverage_overrides"] = valid
+        return adaptive.SkillMap.load(c, details).ok
+    except Exception as exc:
+        _bl("learning map repair failed: "+repr(exc))
+        return False
 
 def build_task_prompt(c):
     settings = effective_gen_settings(c)
@@ -840,6 +1027,14 @@ def gen_tasks():
     details=goal_details(c)
     settings=effective_gen_settings(c)
     if adaptive.is_learning_goal(g, details):
+        skill_map = adaptive.SkillMap.load(c, details)
+        if not skill_map.ok:
+            repair_learning_map(c, details)
+            skill_map = adaptive.SkillMap.load(c, details)
+        if not skill_map.ok:
+            c.setdefault("planning_block", {})[gid(c)] = {"reason": "技能地图覆盖不足，等待内部修图后重试", "gaps": list(skill_map.gaps or ["uncovered"]), "ts": datetime.now().isoformat()}
+            save_goal_state(c); sc(c); gen_status("受阻","技能地图覆盖不足，未派发用户任务",mode="blocked")
+            return "BLOCKED learning map coverage"
         planned=adaptive.plan_learning_tasks(c,g,details,settings.get("task_count",3))
         stage_proposals = adaptive.stage_proposals(c, details)
         stage_pool = adaptive.stage_candidate_pool(c, stage_proposals, budget_minutes=settings.get("daily_minutes", 30))
@@ -911,18 +1106,21 @@ def gen_tasks():
         return "CONFLICT generation state changed"
     c=latest; goal_id=gid(c)
     adaptive.merge_knowledge_graph(c,result.get("knowledge_graph",{}))
-    completed=[]; completed_ids=set(); completed_titles=set()
+    completed=[]; carried=[]; completed_ids=set(); completed_titles=set(); carried_ids=set(); carried_titles=set()
     for old in normalize_tasks(c.get("tasks",[]), goal_id, c.get("done_flags",[])):
         if task_done(old) or old.get("status")=="done":
             completed.append(old); completed_ids.add(old.get("id")); completed_titles.add(old.get("title","").casefold())
-    tasks=[t for t in tasks if t.get("id") not in completed_ids and t.get("title","").casefold() not in completed_titles]
-    tasks=completed+tasks
+        elif old.get("id"):
+            carried.append(old); carried_ids.add(old.get("id")); carried_titles.add(old.get("title","").casefold())
+    tasks=[t for t in tasks if t.get("id") not in completed_ids|carried_ids and t.get("title","").casefold() not in completed_titles|carried_titles]
+    tasks=completed+carried+tasks
+    preserved_count=len(completed)+len(carried)
     known={t.get("title","").casefold() for t in tasks}
     for t in tasks:
         t["depends_on"]=[x for x in as_list(t.get("depends_on")) if x.casefold() in known and x.casefold()!=t.get("title","").casefold()][:4]
     for i,t in enumerate(tasks):
         t["goal_id"]=goal_id
-        if i >= len(completed): t["status"]="pending"; t["id"]=new_id("task")
+        if i >= preserved_count: t["status"]="pending"; t["id"]=new_id("task")
     c["tasks"] = tasks
     c["done_flags"] = [True]*len(completed)+[False]*len(tasks[len(completed):])
     c["completion_pct"]=round(len(completed)*100/len(c["tasks"])) if c["tasks"] else 0; c["plan_locked"]=True
@@ -939,6 +1137,14 @@ def fallback_tasks(c, why):
     criterion_ids=[x["id"] for x in _EVALUATION_MOD.criterion_records(goal_details(c).get("success_criteria", []))]
     details=goal_details(c)
     if adaptive.is_learning_goal(g, details):
+        skill_map = adaptive.SkillMap.load(c, details)
+        if not skill_map.ok:
+            repair_learning_map(c, details)
+            skill_map = adaptive.SkillMap.load(c, details)
+        if not skill_map.ok:
+            c.setdefault("planning_block", {})[gid(c)] = {"reason": "技能地图覆盖不足，等待内部修图后重试", "gaps": list(skill_map.gaps or ["uncovered"]), "ts": datetime.now().isoformat()}
+            save_goal_state(c); sc(c); GEN_STATUS["mode"]="blocked"
+            return "BLOCKED learning map coverage"
         planned=adaptive.plan_learning_tasks(c,g,details,s.get("task_count",3))
         stage_proposals = adaptive.stage_proposals(c, details)
         stage_pool = adaptive.stage_candidate_pool(c, stage_proposals, budget_minutes=s.get("daily_minutes", 30))
@@ -1016,32 +1222,66 @@ def evaluate_task(task_idx):
                 return {"status": "needs_review", "uncertainty": 1}
     if task_kind == "outcome":
         contract = goal_details(c)
-        contract["required_skill_ids"] = list(task.get("required_skill_ids") or [])
-        eligibility = adaptive.outcome_eligibility(c, contract, task.get("required_stage_ids") or [])
-        task["eligibility"] = eligibility
-        task["locked"] = not eligibility.get("eligible")
-        if not eligibility.get("eligible"):
+        manual, manual_valid, manual_reason = manual_review_state(c, task)
+        current_criteria = _EVALUATION_MOD.criterion_records(contract.get("success_criteria", []))
+        task_criteria = [item.get("id") for item in task.get("criteria") or [] if isinstance(item, dict) and item.get("id")]
+        bound_criteria = task_criteria or list(task.get("criterion_ids") or [])
+        task_criterion_text = {task_text(item.get("text")) for item in task.get("criteria") or [] if isinstance(item, dict) and task_text(item.get("text"))}
+        current_criterion_text = {task_text(item.get("text")) for item in current_criteria}
+        criteria_match = task_criterion_text == current_criterion_text if task_criterion_text else set(bound_criteria) == {item["id"] for item in current_criteria}
+        if manual and not manual_valid:
+            result = norm_acceptance_result({"pass": False, "status": "blocked", "reason": manual_reason,
+                "next_steps": ["确认当前任务和证据后重新人工复核"]})
+            task["eligibility"] = {"eligible": False, "missing_skill_ids": [], "missing_stage_ids": []}
+        elif manual_valid:
+            result = norm_acceptance_result({"pass": True, "status": "passed",
+                "reason": "人工复核通过（未执行宿主机或沙箱代码）", "overridden": True,
+                "override_reason": manual.get("reason", "")})
+            task["eligibility"] = adaptive.outcome_eligibility(c, contract, task.get("required_stage_ids") or [])
+        elif task.get("contract_fingerprint") and task.get("contract_fingerprint") != contract_fingerprint(contract):
             result = norm_acceptance_result({"pass": False, "status": "blocked",
-                "reason": "最终成果尚未满足资格门槛",
-                "missing": list(eligibility.get("missing_skill_ids") or []) + list(eligibility.get("missing_stage_ids") or []),
-                "next_steps": ["先完成所需节点和阶段门"]})
+                "reason": "最终成果任务绑定了过期的目标契约", "next_steps": ["重新生成最终成果任务并提交证据"]})
+            task["eligibility"] = {"eligible": False, "missing_skill_ids": [], "missing_stage_ids": []}
+            task["locked"] = True
+        elif not criteria_match:
+            result = norm_acceptance_result({"pass": False, "status": "blocked",
+                "reason": "最终成果任务使用了过期的目标成功标准", "missing": [item["id"] for item in current_criteria if item["id"] not in bound_criteria],
+                "next_steps": ["重新生成最终成果任务并为新增标准提交证据"]})
+            eligibility = {"eligible": False, "missing_skill_ids": [], "missing_stage_ids": []}
+            task["eligibility"] = eligibility; task["locked"] = True
         else:
-            criterion_evidence = task.get("criterion_evidence") or (response.get("criterion_evidence") if isinstance(response, dict) else {})
-            verified_evidence = outcome_evidence_facts(criterion_evidence)
-            evaluated = adaptive.evaluate_outcome(task, {"criterion_evidence": verified_evidence}, criterion_judge=criterion_judge)
-            result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
-                "reason": "所有成功标准均有独立证据" if evaluated.get("status") == "passed" else "仍缺少成功标准的独立证据",
-                "missing": (evaluated.get("failed_criterion_ids") or []) + (evaluated.get("needs_review_criterion_ids") or []), "checks": evaluated.get("criterion_results") or [],
-                "next_steps": evaluated.get("next_actions") or [],
-                "failure_trace": evaluated.get("failure_trace") or []})
+            task["contract_fingerprint"] = contract_fingerprint(contract)
+            contract["required_skill_ids"] = list(task.get("required_skill_ids") or [])
+            eligibility = adaptive.outcome_eligibility(c, contract, task.get("required_stage_ids") or [])
+            task["eligibility"] = eligibility
+            task["locked"] = not eligibility.get("eligible")
+            if not eligibility.get("eligible"):
+                result = norm_acceptance_result({"pass": False, "status": "blocked",
+                    "reason": "最终成果尚未满足资格门槛",
+                    "missing": list(eligibility.get("missing_skill_ids") or []) + list(eligibility.get("missing_stage_ids") or []),
+                    "next_steps": ["先完成所需节点和阶段门"]})
+            else:
+                criterion_evidence = task.get("criterion_evidence") or (response.get("criterion_evidence") if isinstance(response, dict) else {})
+                verified_evidence = outcome_evidence_facts(criterion_evidence)
+                evaluated = adaptive.evaluate_outcome(task, {"criterion_evidence": verified_evidence}, criterion_judge=criterion_judge)
+                result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
+                    "reason": "所有成功标准均有独立证据" if evaluated.get("status") == "passed" else "仍缺少成功标准的独立证据",
+                    "missing": (evaluated.get("failed_criterion_ids") or []) + (evaluated.get("needs_review_criterion_ids") or []), "checks": evaluated.get("criterion_results") or [],
+                    "next_steps": evaluated.get("next_actions") or [],
+                    "failure_trace": evaluated.get("failure_trace") or []})
     elif task_kind == "stage":
+        manual, manual_valid, manual_reason = manual_review_state(c, task)
         stage_input = dict(response) if isinstance(response, dict) else {}
         response_refs = [item for item in as_list(stage_input.get("evidence_refs")) if value_text(item)]
         evidence = list(dict.fromkeys([item for item in evidence + response_refs if value_text(item)]))
         task["evidence"] = evidence
         stage_input["evidence_refs"] = evidence
         stage_input["evidence_facts"] = stage_evidence_facts(evidence)
-        evaluated = adaptive.evaluate_stage_outcome(task, stage_input)
+        evaluated = ({"status": "blocked", "reason": manual_reason, "evidence_refs": evidence, "skill_observations": []}
+                     if manual and not manual_valid else
+                     {"status": "passed", "reason": "人工复核通过（未执行宿主机或沙箱代码）",
+                      "evidence_refs": evidence, "skill_observations": []}
+                     if manual_valid else adaptive.evaluate_stage_outcome(task, stage_input))
         result = norm_acceptance_result({"pass": evaluated.get("status") == "passed", "status": evaluated.get("status"),
             "reason": evaluated.get("reason") or "阶段观察点已记录",
             "missing": [item.get("skill_id") for item in evaluated.get("attribution") or []],
@@ -1060,14 +1300,26 @@ def evaluate_task(task_idx):
         details=evidence_details(evidence,response); verdict=_ACCEPTANCE_MOD.check_evidence(task,details)
         result=_ACCEPTANCE_MOD.verdict_to_acceptance_result(verdict)
         if result.get("needs_llm") and cloud_enabled and valid_deepseek_key(dk()):
-            result.update(_ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries)))
+            llm_result = _ACCEPTANCE_MOD.run_llm_eval(task,details,{},lambda msgs,mt,temp,to,retries: deepseek_json(msgs,mt,temp,to,retries))
+            if llm_result.get("status") == "needs_review":
+                result = norm_acceptance_result(llm_result)
+            else:
+                result = norm_acceptance_result({**result, **llm_result,
+                    "status": "passed" if llm_result.get("pass") is True else "failed",
+                    "needs_llm": False})
     result=norm_acceptance_result(result)
+    if task_kind in ("outcome", "stage"):
+        result["contract_fingerprint"] = contract_fingerprint(goal_details(c))
+        result["task_fingerprint"] = manual_task_fingerprint(task)
     if task_kind == "outcome" and result.get("status") == "passed":
         if not c.get("goal_completed"):
             c["goal_completed"] = True
             c["goal_completed_at"] = datetime.now().isoformat()
             evlog(c, "outcome_completed", "最终成果验收通过", {"task_id": task.get("id", "")})
             record_product_event(c, "outcome_completed")
+    elif task_kind == "outcome":
+        c["goal_completed"] = False
+        c["goal_completed_at"] = ""
     if result["status"] != "passed":
         sample_ai_incident("evidence_to_acceptance", "deepseek" if cloud_enabled else "deterministic",
                            task.get("criterion_ids", []))
@@ -1076,13 +1328,15 @@ def evaluate_task(task_idx):
     if task_kind == "stage":
         persisted_stage = adaptive.record_stage_outcome(c, task, {"status": result.get("status"), "reason": result.get("reason"),
             "evidence_refs": evaluated.get("evidence_refs") or evidence, "evidence_facts": stage_input.get("evidence_facts") or [],
-            "skill_observations": result.get("checks") or []})
+            "skill_observations": result.get("checks") or [], "manual_review": manual if manual_valid else None})
         result = dict(result, status=persisted_stage.get("status"),
             reason=persisted_stage.get("reason") or result.get("reason"))
         result["pass"] = result.get("status") == "passed"
         result = norm_acceptance_result(result)
+        result["contract_fingerprint"] = contract_fingerprint(goal_details(c))
+        result["task_fingerprint"] = manual_task_fingerprint(task)
         task["acceptance_result"] = result
-        task["status"] = "done" if result.get("status") == "passed" else task.get("status") or "pending"
+        task["status"] = "done" if result.get("status") == "passed" else ("pending" if task.get("status") == "done" else task.get("status") or "pending")
         while len(c["done_flags"]) <= task_idx: c["done_flags"].append(False)
         c["done_flags"][task_idx] = result.get("status") == "passed"
         c["tasks"] = items
@@ -2130,6 +2384,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try:
                     with os.fdopen(fd,"wb") as f: f.write(item.get_payload(decode=True) or b"")
                     STORE.import_complete(tmp)
+                    clear_imported_manual_reviews()
                 finally:
                     try: os.remove(tmp)
                     except OSError: pass
@@ -2380,13 +2635,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json({"ok":True,"review":rec.get("review",{})})
             if self.path=="/api/archive-delete":
                 push_undo(c,"daily archive")
+                cycle_id=task_text(data.get("cycle_id"))
                 target=task_text(data.get("date","")); before=len(c.get("archives",[]))
-                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}",target): return self.send_json({"ok":False,"message":"归档日期格式不正确"},400)
-                c["archives"]=[a for a in c.get("archives",[]) if task_text(a.get("date"))!=target]
+                if not cycle_id and not re.fullmatch(r"\d{4}-\d{2}-\d{2}",target): return self.send_json({"ok":False,"message":"归档日期格式不正确"},400)
+                archive_goal=task_text(data.get("goal_id"))
+                c["archives"]=[a for a in c.get("archives",[]) if not (cycle_id and task_text(a.get("cycle_id")) == cycle_id and (not target or task_text(a.get("date")) == target) and (not archive_goal or task_text(a.get("goal_id")) == archive_goal)) and not (not cycle_id and task_text(a.get("date")) == target)]
                 if len(c["archives"])==before: return self.send_json({"ok":False,"message":"找不到这条归档"},404)
                 evlog(c,"archive_delete","删除归档",{"date":target}); sc(c); return self.send_json({"ok":True,"message":"归档已删除"})
             if self.path=="/api/settings":
                 ensure_goal_state(c); save_goal_state(c)
+                old_contract_fp = contract_fingerprint(goal_details(c))
+                previous_active_goal = int(c.get("active_goal", 0) or 0)
                 if not isinstance(data.get("goals"),list): return self.send_json({"ok":False,"message":"目标列表格式不正确"},400)
                 if "task_gen" in data and not isinstance(data.get("task_gen"),dict): return self.send_json({"ok":False,"message":"生成参数格式不正确"},400)
                 old={task_text(g.get("id")):copy.deepcopy(g) for g in c.get("goals",[]) if isinstance(g,dict) and task_text(g.get("id"))}
@@ -2434,6 +2693,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         g[k]=task_text(details.get(k,""))
                     for k in ("success_criteria","constraints"):
                         g[k]=as_list(details.get(k,[]))
+                new_contract_fp = contract_fingerprint(goal_details(c))
+                if active_goal == previous_active_goal and new_contract_fp != old_contract_fp:
+                    c["goal_completed"] = False; c["goal_completed_at"] = ""
+                    for task in c.get("tasks", []):
+                        if isinstance(task, dict) and task.get("task_kind") == "outcome":
+                            task["contract_stale"] = True
+                    evlog(c, "contract_changed", "成功标准或最终成果已变更，旧最终成果记录仅保留为历史", {"previous": old_contract_fp, "current": new_contract_fp})
                 ensure_goal_state(c)
                 try: retention=float(data.get("desired_retention",0.9) or 0.9)
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"FSRS 目标记忆率格式不正确"},400)
@@ -2455,7 +2721,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path=="/api/active-goal":
                 try: active_goal=int(data.get("active_goal",0) or 0)
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"当前目标索引必须是数字"},400)
-                save_goal_state(c); c["active_goal"]=active_goal; ensure_goal_state(c); sc(c); return self.send_json({"ok":True})
+                TASKS.pause_active_tasks(c)
+                save_goal_state(c); c["active_goal"]=active_goal; ensure_goal_state(c); TASKS.pause_active_tasks(c); save_goal_state(c); sc(c); return self.send_json({"ok":True})
             if self.path=="/api/goal-delete":
                 ensure_goal_state(c); save_goal_state(c)
                 goals=c.get("goals",[])
@@ -2587,8 +2854,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path=="/api/manual-accept":
                 try: i=int(data.get("task_idx",0))
                 except (TypeError,ValueError): return self.send_json({"ok":False,"message":"invalid task index"},400)
-                ok, message = ACCEPTANCE.manual_accept(c, i, data.get("reason", "manual approval"))
-                if ok: sc(c)
+                task_kind = str((c.get("tasks", [])[i] if 0 <= i < len(c.get("tasks", [])) else {}).get("task_kind") or "").strip()
+                ok, message = ACCEPTANCE.manual_accept(c, i, data.get("reason", ""))
+                if ok and task_kind not in ("stage", "outcome"): sc(c)
                 return self.send_json({"ok":ok,"message":message}, 200 if ok else 400)
             if self.path=="/api/clear-fg":
                 push_undo(c,"foreground statistics")
@@ -2803,6 +3071,41 @@ def web_tray(url, server):
     while u32.GetMessageW(ctypes.byref(m),None,0,0)>0:
         u32.TranslateMessage(ctypes.byref(m)); u32.DispatchMessageW(ctypes.byref(m))
 
+def manual_review_task(c, idx, reason):
+    c = ensure_goal_state(c)
+    tasks = normalize_tasks(c.get("tasks", []), gid(c), c.get("done_flags", []))
+    if idx < 0 or idx >= len(tasks): return False, "task index out of range"
+    task = tasks[idx]
+    reason = task_text(reason).strip()
+    if not reason: return False, "人工复核理由不能为空"
+    if task.get("task_kind") == "outcome":
+        contract = goal_details(c)
+        if task.get("contract_fingerprint") != contract_fingerprint(contract):
+            return False, "最终成果任务绑定了过期的目标契约"
+        current = _EVALUATION_MOD.criterion_records(contract.get("success_criteria", []))
+        bound = [item.get("id") for item in task.get("criteria") or [] if isinstance(item, dict) and item.get("id")]
+        bound_text = {task_text(item.get("text")) for item in task.get("criteria") or [] if isinstance(item, dict) and task_text(item.get("text"))}
+        current_text = {task_text(item.get("text")) for item in current}
+        if (bound_text and bound_text != current_text) or (not bound_text and set(bound or task.get("criterion_ids") or []) != {item["id"] for item in current}):
+            return False, "最终成果任务使用了过期的目标成功标准"
+        eligibility = adaptive.outcome_eligibility(c, contract, task.get("required_stage_ids") or [])
+        if not eligibility.get("eligible"):
+            return False, "当前最终成果尚未满足资格门槛，不能人工绕过"
+        task["eligibility"] = eligibility
+    elif task.get("task_kind") == "stage":
+        eligibility = adaptive.stage_eligibility(c, task)
+        if not eligibility.get("eligible"):
+            return False, "当前阶段尚未满足资格门槛，不能人工绕过"
+    record = {"task_id": task_text(task.get("id")),
+              "contract_fingerprint": contract_fingerprint(goal_details(c)),
+              "task_fingerprint": manual_task_fingerprint(task),
+              "authority": "user", "reason": reason, "ts": datetime.now().isoformat()}
+    c.setdefault("manual_reviews", {})[record["task_id"]] = record
+    task["manual_review"] = copy.deepcopy(record)
+    c["tasks"] = tasks; save_goal_state(c); sc(c)
+    result = evaluate_task(idx)
+    return result.get("status") == "passed", "task manually accepted" if result.get("status") == "passed" else result.get("reason", "人工复核未通过")
+
 def service_context():
     return ServiceContext(
         text=task_text, normalize=normalize_tasks, goal_id=gid,
@@ -2815,6 +3118,7 @@ def service_context():
         agent_loop=lambda run_id: _agent_loop(ensure_goal_state(lc()), run_id),
         feedback_record=adaptive.record_feedback, done=task_done,
         learning_outcome=adaptive.record_learning_outcome,
+        manual_review=manual_review_task,
     )
 
 

@@ -1,6 +1,7 @@
 """FSRS scheduling and the per-goal skill map."""
 
 import acceptance
+import hashlib
 import json
 import re
 import sys
@@ -253,6 +254,29 @@ def instantiate_stage_task(pack, stage_id, proposal):
     task["observations_required"] = True
     return task
 
+def stage_task_fingerprint(task):
+    task = task if isinstance(task, dict) else {}
+    payload = {key: task.get(key) for key in (
+        "id", "stage_id", "template_revision", "pack_id", "pack_version",
+        "required_skill_ids", "supporting_skill_ids", "integration_behavior",
+        "outcome_shape", "skill_checks", "evidence_contract", "materials",
+        "evidence", "response")}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def stage_eligibility(state, task):
+    """Check the immutable stage contract and its hard skill prerequisites."""
+    task = task if isinstance(task, dict) else {}
+    pack = resolve_pack(state, task.get("pack_id"), task.get("pack_version"))
+    template = get_stage_template(pack, task.get("stage_id"))
+    errors = validate_stage_proposal(pack, template, task) if pack and template else ["stage pack or template is unavailable"]
+    skills = _skills(state)
+    required = [str(item).strip() for item in task.get("required_skill_ids") or [] if str(item).strip()]
+    missing = [skill_id for skill_id in required
+               if not (skills.get(skill_id) or {}).get("contract_met") or not _ready(skills, skills.get(skill_id) or {})]
+    return {"eligible": not errors and not missing, "required_skill_ids": required,
+            "missing_skill_ids": missing, "errors": errors}
+
 
 def _stage_evidence_verdict(task, facts):
     files = [item for item in facts if isinstance(item, dict) and item.get("exists")]
@@ -282,11 +306,20 @@ def record_stage_outcome(state, task, outcome, now=None):
     """Persist integration evidence without changing node mastery."""
     state = state if isinstance(state, dict) else {}
     task = task if isinstance(task, dict) else {}
-    result = evaluate_stage_outcome(task, outcome)
+    manual = outcome.get("manual_review") if isinstance(outcome, dict) else None
+    if isinstance(manual, dict) and str(manual.get("reason") or "").strip():
+        eligibility = stage_eligibility(state, task)
+        result = ({"status": "passed", "reason": "人工复核通过（未执行宿主机或沙箱代码）",
+                   "skill_observations": [], "attribution": [], "evidence_refs": []}
+                  if eligibility.get("eligible") else
+                  {"status": "blocked", "reason": "阶段资格未满足，人工复核不能绕过",
+                   "skill_observations": [], "attribution": [], "evidence_refs": []})
+    else:
+        result = evaluate_stage_outcome(task, outcome)
     evidence = state.setdefault("user_model", {}).setdefault("integration_evidence", [])
     task_id = str(task.get("id") or task.get("stage_id") or "stage")
     existing = next((item for item in evidence if item.get("task_id") == task_id), None)
-    attempt = dict(result, ts=_utc(now).isoformat())
+    attempt = dict(result, task_fingerprint=stage_task_fingerprint(task), ts=_utc(now).isoformat())
     if existing:
         previous = {
             key: existing.get(key) for key in ("status", "reason", "skill_observations", "attribution", "evidence_refs")
@@ -298,7 +331,7 @@ def record_stage_outcome(state, task, outcome, now=None):
             existing.update(attempt)
         result = existing
     else:
-        record = dict(result, task_id=task_id, stage_id=task.get("stage_id", ""),
+        record = dict(result, task_id=task_id, stage_id=task.get("stage_id", ""), task_fingerprint=attempt["task_fingerprint"],
                       ts=attempt["ts"], attempts=[attempt])
         evidence.append(record)
         result = record
@@ -353,28 +386,51 @@ def outcome_eligibility(state, contract, required_stage_ids=()):
     contract = contract if isinstance(contract, dict) else {}
     criteria = criterion_records(contract.get("success_criteria") or [])
     skills = _skills(state)
+    model = (state.get("user_model") or {}) if isinstance(state, dict) else {}
+    pack = match_pack(contract, state) if isinstance(state, dict) else None
+    if pack and model.get("pack_id") and model.get("pack_version"):
+        overrides = model.get("coverage_overrides", {})
+        gaps = [gap for gap in coverage_gaps(pack, contract)
+                if not _coverage_override_valid(gap, overrides, skills)]
+        if gaps:
+            return {"eligible": False, "criteria": criteria, "required_skill_ids": [],
+                    "missing_skill_ids": [], "missing_stage_ids": list(required_stage_ids),
+                    "coverage_gaps": gaps, "reason": "能力地图未覆盖当前成功标准"}
     missing_skills = []
     required_skill_ids = [str(item).strip() for item in (contract.get("required_skill_ids") or (state.get("_required_outcome_skills") if isinstance(state, dict) else []) or []) if str(item).strip()]
     for skill_id in required_skill_ids:
         skill = skills.get(skill_id) or {}
         if not skill.get("contract_met"):
             missing_skills.append(skill_id)
+        for parent in skill.get("prerequisites", []) or []:
+            if _edge_kind(skill, parent) != "soft" and not _parent_met(skills, parent):
+                missing_skills.append(parent)
     if not required_skill_ids:
         pack = resolve_pack(state) if isinstance(state, dict) else None
-        for criterion in contract.get("success_criteria") or []:
-            text = str(criterion or "").strip()
-            for sink_id in (pack or {}).get("covers", {}).get(text, []):
-                if sink_id not in required_skill_ids:
-                    required_skill_ids.append(sink_id)
+        for sink_id in covered_skill_ids(pack, contract, (state.get("user_model", {}) or {}).get("coverage_overrides", {})):
+            if sink_id not in required_skill_ids:
+                required_skill_ids.append(sink_id)
         for skill_id, skill in skills.items():
             if skill.get("required_for_outcome") and skill_id not in required_skill_ids:
                 required_skill_ids.append(skill_id)
         for skill_id in required_skill_ids:
             if not (skills.get(skill_id) or {}).get("contract_met"):
                 missing_skills.append(skill_id)
+            skill = skills.get(skill_id) or {}
+            for parent in skill.get("prerequisites", []) or []:
+                if _edge_kind(skill, parent) != "soft" and not _parent_met(skills, parent):
+                    missing_skills.append(parent)
     missing_stages = []
     integration = (state.get("user_model") or {}).get("integration_evidence", [])
-    passed_stages = {item.get("stage_id") for item in integration if item.get("status") == "passed"}
+    passed_stages = set()
+    current_tasks = state.get("tasks") if isinstance(state, dict) and isinstance(state.get("tasks"), list) else []
+    for item in integration:
+        if item.get("status") != "passed": continue
+        stage_task = next((task for task in current_tasks if isinstance(task, dict) and
+                           (task.get("id") == item.get("task_id") or task.get("stage_id") == item.get("stage_id"))), None)
+        if stage_task and item.get("task_fingerprint") != stage_task_fingerprint(stage_task):
+            continue
+        passed_stages.add(item.get("stage_id"))
     missing_stages = [stage_id for stage_id in required_stage_ids if stage_id not in passed_stages]
     eligible = bool(criteria) and not missing_skills and not missing_stages
     return {"eligible": eligible, "criteria": criteria, "required_skill_ids": required_skill_ids,
@@ -392,6 +448,7 @@ def outcome_task(contract, state=None, required_skill_ids=(), required_stage_ids
             "description": "直接提交最终成果，并为每条成功标准提供独立证据。",
             "criterion_ids": [item["id"] for item in criteria],
             "criteria": criteria, "required_skill_ids": gates.get("required_skill_ids", required_skill_ids),
+            "contract_fingerprint": hashlib.sha256(json.dumps({"outcome": str(contract.get("outcome") or "").strip(), "success_criteria": [str(x).strip() for x in contract.get("success_criteria") or []]}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16],
             "required_stage_ids": list(required_stage_ids), "eligibility": gates,
             "status": "pending", "locked": not gates["eligible"],
             "evidence": [], "criterion_evidence": {}}
@@ -1025,8 +1082,6 @@ def _bind_pack(state, pack):
 
 
 def _refresh_band(skill, now=None):
-    if skill.get("band") == "skipped" and not skill.get("contract_met"):
-        return skill["band"]
     due = False
     try:
         due = bool(skill.get("review_due_at")) and datetime.fromisoformat(skill["review_due_at"]).astimezone(timezone.utc) <= _utc(now)
@@ -1060,14 +1115,31 @@ def coverage_gaps(pack, contract):
     covers = (pack or {}).get("covers") if isinstance(pack, dict) else None
     if not covers:
         return []
-    gaps = []
+    return [str(criterion).strip() for criterion in (contract or {}).get("success_criteria") or []
+            if str(criterion).strip() and not _criterion_covered(str(criterion).strip(), covers)]
+
+def _criterion_covered(text, covers):
+    labels = [str(label).strip() for label in covers if str(label).strip() and str(label).strip() in text]
+    labels = [label for label in labels if not any(label != other and label in other for other in labels)]
+    return text in covers or len(labels) >= 2
+
+def _coverage_override_valid(criterion, overrides, skills):
+    ids = overrides.get(criterion, []) if isinstance(overrides, dict) else []
+    return bool(ids) and all(str(skill_id).strip() in skills for skill_id in ids)
+
+def covered_skill_ids(pack, contract, overrides=None):
+    covers = (pack or {}).get("covers") if isinstance(pack, dict) else {}
+    ids = []
     for criterion in (contract or {}).get("success_criteria") or []:
         text = str(criterion or "").strip()
-        if not text:
-            continue
-        if not any(str(label) and str(label) in text for label in covers):
-            gaps.append(text)
-    return gaps
+        keys = [text] if text in covers else ([label for label in covers if str(label).strip() in text] if _criterion_covered(text, covers) else [])
+        keys += [text] if text in (overrides or {}) else []
+        for key in keys:
+            for skill_id in (overrides or {}).get(key, covers.get(key, [])):
+                skill_id = str(skill_id).strip()
+                if skill_id and skill_id not in ids:
+                    ids.append(skill_id)
+    return ids
 
 
 class SkillMap:
@@ -1095,6 +1167,8 @@ class SkillMap:
             loaded = cls(state, contract, pack=pack, ok=True)
             loaded.apply_baseline(contract.get("baseline"))
         gaps = coverage_gaps(pack, contract)
+        overrides = (state.get("user_model", {}) or {}).get("coverage_overrides", {})
+        gaps = [gap for gap in gaps if not _coverage_override_valid(gap, overrides, _skills(state))]
         ok = _coverage_ok(pack, _skills(state)) and not gaps
         loaded = cls(state, contract, pack=pack, ok=ok, error="" if ok else "uncovered")
         loaded.gaps = gaps
@@ -1180,8 +1254,12 @@ class SkillMap:
         if met:
             skill["mastery"] = max(float(skill.get("mastery", 0) or 0), 1.0)
             skill["band"] = "learning"
-        elif str(skill.get("demonstration") or "") in ("practice", "explain", "deliverable"):
+        else:
             skill["contract_met"] = False
+            if skill.get("skip_reason") == "baseline":
+                skill.pop("skip_reason", None)
+                skill["baseline_override"] = True
+                skill["band"] = "learning" if int(skill.get("reviews", 0) or 0) else "unlearned"
         _refresh_band(skill)
         return self
 
